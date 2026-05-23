@@ -227,6 +227,18 @@ def cli() -> None:
     ),
 )
 @click.option(
+    "-d", "--duration",
+    "target_duration",
+    type=float,
+    default=None,
+    help=(
+        "Target episode duration in minutes.  Overrides "
+        "gemini.dialogue.target_duration_minutes from the config.  "
+        "Implicit min/max are 70%% and 150%% of this value; pass them "
+        "explicitly in the config to override."
+    ),
+)
+@click.option(
     "-o", "--output-dir",
     "output_dir_override",
     default=None,
@@ -268,6 +280,7 @@ def run(
     urls: tuple[str, ...],
     config_path: str | None,
     research_rounds: int | None,
+    target_duration: float | None,
     output_dir_override: str | None,
     dry_run: bool,
     no_audio: bool,
@@ -338,6 +351,18 @@ def run(
     if "model" in research_cfg and "model" not in gemini_research_cfg:
         gemini_research_cfg["model"] = research_cfg["model"]
     gemini_cfg = {**gemini_cfg, "research": gemini_research_cfg}
+
+    # CLI --duration overrides gemini.dialogue.target_duration_minutes.
+    if target_duration is not None:
+        if target_duration <= 0:
+            click.echo(
+                f"[ERROR] --duration must be positive (got {target_duration}).",
+                err=True,
+            )
+            sys.exit(1)
+        dialogue_cfg = dict(gemini_cfg.get("dialogue", {}) or {})
+        dialogue_cfg["target_duration_minutes"] = target_duration
+        gemini_cfg = {**gemini_cfg, "dialogue": dialogue_cfg}
 
     tracker = TokenTracker(pricing=pricing_cfg, service_tier=service_tier)
 

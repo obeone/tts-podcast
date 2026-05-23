@@ -97,7 +97,12 @@ Instructions:
 - Discuss them in depth: explain what they are about, why they matter, \
 and explore implications or connections to broader trends.
 - The entire dialogue MUST be written in {language}.
-- The total dialogue must be at least {target_word_count} words.
+- Target episode length: about {target_minutes:.0f} minutes of spoken \
+conversation (~{target_words} words at a {wpm} wpm conversational pace).
+- Hard minimum: ~{min_words} words (~{min_minutes:.0f} min). Do NOT wrap up \
+shorter than this.
+- Soft maximum: ~{max_words} words (~{max_minutes:.0f} min). Wrap up before \
+exceeding this; trim depth on secondary points rather than blowing past it.
 - Keep the tone informative but lively — like two curious friends catching up on tech news.
 - Reflect each host's personality in their speaking style and reactions.
 {delivery_cues_guidance}
@@ -165,7 +170,10 @@ def _build_prompt(
     speaker2_name: str,
     speaker1_personality: str = "",
     speaker2_personality: str = "",
-    target_word_count: int = 1200,
+    min_minutes: float = 6.0,
+    target_minutes: float = 8.0,
+    max_minutes: float = 14.0,
+    words_per_minute: int = 150,
     language: str = "French",
     audio_tags: bool = False,
     research_notes: str = "",
@@ -186,8 +194,18 @@ def _build_prompt(
         Short description of the first host's personality and speaking style.
     speaker2_personality : str, optional
         Short description of the second host's personality and speaking style.
-    target_word_count : int, optional
-        Minimum total word count for the generated dialogue, by default 1200.
+    min_minutes : float, optional
+        Lower bound on the target episode length, in minutes.  Translated
+        to a word count using *words_per_minute* and presented to the LLM
+        as a hard minimum.
+    target_minutes : float, optional
+        Desired episode length, in minutes.
+    max_minutes : float, optional
+        Upper bound on the target episode length, in minutes.  Presented
+        to the LLM as a soft maximum.
+    words_per_minute : int, optional
+        Conversational pace used to translate minutes to word counts in
+        the prompt, by default 150.
     language : str, optional
         Language for the generated dialogue, by default ``"French"``.
     audio_tags : bool, optional
@@ -227,12 +245,22 @@ def _build_prompt(
         else ""
     )
 
+    min_words = max(1, round(min_minutes * words_per_minute))
+    target_words = max(min_words, round(target_minutes * words_per_minute))
+    max_words = max(target_words, round(max_minutes * words_per_minute))
+
     return _SYSTEM_PROMPT_TEMPLATE.format(
         speaker1=speaker1_name,
         speaker2=speaker2_name,
         speaker1_personality=speaker1_personality or "enthusiastic and curious",
         speaker2_personality=speaker2_personality or "analytical and thoughtful",
-        target_word_count=target_word_count,
+        min_minutes=min_minutes,
+        target_minutes=target_minutes,
+        max_minutes=max_minutes,
+        min_words=min_words,
+        target_words=target_words,
+        max_words=max_words,
+        wpm=words_per_minute,
         language=language,
         delivery_cues_guidance=delivery_cues_guidance,
         example_dialogue=example_dialogue,
@@ -413,7 +441,14 @@ def generate_dialogue(
     language = gemini_cfg.get("language", "French")
 
     dialogue_cfg = gemini_cfg.get("dialogue", {})
-    target_word_count = dialogue_cfg.get("target_word_count", 1200)
+    target_minutes = float(dialogue_cfg.get("target_duration_minutes", 8.0))
+    wpm = int(dialogue_cfg.get("words_per_minute", 150))
+    min_minutes = float(
+        dialogue_cfg.get("min_duration_minutes", round(target_minutes * 0.7, 1))
+    )
+    max_minutes = float(
+        dialogue_cfg.get("max_duration_minutes", round(target_minutes * 1.5, 1))
+    )
 
     audio_tags = _audio_tags_enabled(gemini_cfg)
     if audio_tags:
@@ -425,7 +460,10 @@ def generate_dialogue(
         speaker2_name,
         speaker1_personality=speaker1_personality,
         speaker2_personality=speaker2_personality,
-        target_word_count=target_word_count,
+        min_minutes=min_minutes,
+        target_minutes=target_minutes,
+        max_minutes=max_minutes,
+        words_per_minute=wpm,
         language=language,
         audio_tags=audio_tags,
         research_notes=research_notes,

@@ -32,7 +32,16 @@ gemini:
     voice: Charon
     personality: "analytical, mildly skeptical, adds nuance and historical context"
   dialogue:
-    target_word_count: 1200 # minimum word count for the full dialogue
+    # Target episode duration in minutes.  CLI -d/--duration overrides.
+    target_duration_minutes: 8
+    # Optional explicit bounds.  When omitted, they default to
+    # 70 % and 150 % of target_duration_minutes.
+    # min_duration_minutes: 6
+    # max_duration_minutes: 14
+    # Conversational pace (words per minute) used to translate minutes
+    # to word counts in the prompt.  150 wpm is a typical two-host pace;
+    # raise it (~170) for faster French, lower (~130) for deliberate English.
+    words_per_minute: 150
   tts_style:
     pace: "slow and deliberate" # natural-language pace for TTS preamble
     scene: "Two friends co-hosting a casual French tech podcast in a cozy studio"

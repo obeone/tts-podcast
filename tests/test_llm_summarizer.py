@@ -154,6 +154,64 @@ class TestGenerateDialogue:
         assert config_obj.max_output_tokens == 8192
 
 
+class TestDurationConfig:
+    """generate_dialogue must translate duration config into the prompt."""
+
+    def test_default_duration_appears_in_prompt(self):
+        """With no dialogue config, defaults (8 min target, 150 wpm) show up."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        prompt = _captured_prompt(mock_genai)
+        # Target word count = 8 * 150 = 1200
+        assert "1200" in prompt
+        # Duration label
+        assert "8 minutes" in prompt or "8 min" in prompt
+
+    def test_custom_target_duration_propagated(self):
+        """Explicit target_duration_minutes drives target word count."""
+        cfg = {
+            **GEMINI_CFG,
+            "dialogue": {"target_duration_minutes": 12, "words_per_minute": 150},
+        }
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
+
+        prompt = _captured_prompt(mock_genai)
+        # 12 * 150 = 1800
+        assert "1800" in prompt
+        # Default bounds: 70% (8.4 min → ~1260 words) and 150% (18 min → 2700 words)
+        assert "2700" in prompt
+        assert "1260" in prompt
+
+    def test_explicit_min_max_overrides_defaults(self):
+        """min/max_duration_minutes from config drive the bounds verbatim."""
+        cfg = {
+            **GEMINI_CFG,
+            "dialogue": {
+                "target_duration_minutes": 10,
+                "min_duration_minutes": 5,
+                "max_duration_minutes": 20,
+                "words_per_minute": 140,
+            },
+        }
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
+
+        prompt = _captured_prompt(mock_genai)
+        # 5 * 140 = 700, 10 * 140 = 1400, 20 * 140 = 2800
+        assert "700" in prompt
+        assert "1400" in prompt
+        assert "2800" in prompt
+        assert "140 wpm" in prompt
+
+
 class TestResearchNotesInjection:
     """Verify generate_dialogue injects research notes into the prompt only when provided."""
 
