@@ -83,8 +83,11 @@ def _render_overview(
         lines.append("## Sources\n")
         for idx, source in enumerate(sources, start=1):
             title = source.title or source.url
-            ok_marker = "" if source.scraped_ok else " *(scrape failed)*"
-            lines.append(f"{idx}. [{title}]({source.url}){ok_marker}")
+            if source.kind == "search":
+                lines.append(f"{idx}. *Web search:* `{title}`")
+            else:
+                ok_marker = "" if source.scraped_ok else " *(input failed)*"
+                lines.append(f"{idx}. [{title}]({source.url}){ok_marker}")
         lines.append("")
 
     if link_report.total > 0:
@@ -129,10 +132,14 @@ def _render_sources(sources: list[Source]) -> str:
 
     for source in sources:
         title = source.title or source.url
+        if source.kind == "search":
+            lines.append(f"## Web search: {title}\n")
+            lines.append("*Topic researched via Google Search grounding — see research notes.*\n")
+            continue
         lines.append(f"## {title}\n")
         lines.append(f"**URL:** <{source.url}>\n")
         if not source.scraped_ok:
-            lines.append("*Scraping failed — no content extracted.*\n")
+            lines.append("*Input failed — no content extracted.*\n")
             continue
         if source.summary:
             lines.append(f"**Summary:** {source.summary}\n")
