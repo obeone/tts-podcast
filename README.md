@@ -3,15 +3,19 @@
 Turn any article URL into a two-voice podcast via Google Gemini TTS, with
 optional iterative Google-Search-grounded research enrichment.
 
-`tts-podcast` is a CLI tool that takes one or more arbitrary article URLs,
-scrapes the content, optionally enriches it with iterative web research,
-generates a conversational dialogue between two hosts using Gemini, and
-synthesises an MP3 (or WAV) using Gemini's multi-speaker TTS.
+`tts-podcast` is a CLI tool that takes one or more article URLs, local
+documents, or web-search queries, optionally enriches them with iterative
+web research, generates a conversational dialogue between two hosts using
+Gemini, and synthesises an MP3 (or WAV) using Gemini's multi-speaker TTS.
 
 ## Features
 
 - **Any URL → podcast** — feed one or several article URLs; the tool
   handles scraping, dialogue generation, and audio export.
+- **Local documents** (`-f FILE`) — include `.txt`, `.md`, `.html`, or
+  `.pdf` files directly; no network request is made for them.
+- **Web-search queries** (`-s QUERY`) — pass a natural-language topic;
+  the research stage investigates it via Google Search grounding.
 - **Iterative research** (`--research N`) — runs *N* sequential Gemini
   rounds using the [`google_search`][grounding] grounding tool. Each round
   builds on the previous round's findings, drilling into gaps and
@@ -66,6 +70,16 @@ uv run tts-podcast run -R 2 \
     https://blog.example.com/a \
     https://blog.example.com/b
 
+# Local document (PDF, txt, md, html) — no network request
+uv run tts-podcast run -n -f paper.pdf
+
+# Web-search query — research auto-bumped to 1 if no other inputs
+uv run tts-podcast run -n -s "agentic AI memory systems"
+
+# Mixed: URL + local file + search query in one episode
+uv run tts-podcast run -n https://blog.example.com/article \
+    -f notes.md -s "related follow-up topic"
+
 # Preview the dialogue without calling TTS
 uv run tts-podcast run -n https://blog.example.com/article
 
@@ -77,6 +91,8 @@ uv run tts-podcast run -A https://blog.example.com/article
 
 | Flag | Description |
 |---|---|
+| `-f, --file FILE` | Local document to include (repeatable). Supports `.txt`, `.md`, `.html`, `.pdf`. |
+| `-s, --search QUERY` | Web-search query to seed the podcast (repeatable). Research auto-bumped to 1 if search-only. |
 | `-R, --research N` | Number of Google-Search-grounded research rounds (default 0). |
 | `-n, --dry-run` | Print dialogue to stdout, no TTS. |
 | `-A, --no-audio` | Generate script + report only. |
