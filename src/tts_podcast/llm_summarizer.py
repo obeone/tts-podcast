@@ -223,10 +223,13 @@ def _build_prompt(
     """
     article_blocks: list[str] = []
     for i, article in enumerate(articles, start=1):
-        text = getattr(article, "full_text", "") or getattr(article, "summary", "")
         title = getattr(article, "title", f"Article {i}")
-        url = getattr(article, "url", "")
-        block = f"[{i}] {title}\nURL: {url}\n{text}"
+        if getattr(article, "kind", "url") == "search":
+            block = f"[{i}] Topic of investigation: {title}\n(See research notes below for findings.)"
+        else:
+            text = getattr(article, "full_text", "") or getattr(article, "summary", "")
+            url = getattr(article, "url", "")
+            block = f"[{i}] {title}\nURL: {url}\n{text}"
         article_blocks.append(block)
 
     articles_text = "\n\n".join(article_blocks)

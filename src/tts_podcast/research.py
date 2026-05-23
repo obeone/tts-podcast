@@ -152,8 +152,11 @@ def _format_articles(sources: list[Source]) -> str:
     """
     blocks: list[str] = []
     for i, src in enumerate(sources, start=1):
-        body = src.full_text or src.summary or ""
-        blocks.append(f"[{i}] {src.title}\nURL: {src.url}\n{body}")
+        if getattr(src, "kind", "url") == "search":
+            blocks.append(f"[{i}] Topic to investigate: {src.title}")
+        else:
+            body = src.full_text or src.summary or ""
+            blocks.append(f"[{i}] {src.title}\nURL: {src.url}\n{body}")
     return "\n\n".join(blocks)
 
 
