@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import shutil
 import sys
 from datetime import date
@@ -39,6 +40,8 @@ from tts_podcast.audio_exporter import export_audio
 from tts_podcast.config import ConfigError, load_config
 from tts_podcast.link_extractor import extract_links
 from tts_podcast.llm_summarizer import generate_dialogue
+from tts_podcast.local_loader import load_local_files
+from tts_podcast.models import Source
 from tts_podcast.report_generator import generate_report
 from tts_podcast.research import conduct_research
 from tts_podcast.token_tracker import TokenTracker
@@ -68,6 +71,52 @@ _GEMINI_VOICES = [
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _slugify(text: str, limit: int = 40) -> str:
+    """
+    Convert arbitrary text to a URL-safe slug.
+
+    Parameters
+    ----------
+    text : str
+        Input string.
+    limit : int, optional
+        Maximum output length, by default 40.
+
+    Returns
+    -------
+    str
+        Lowercase alphanumeric slug, dashes replacing non-alphanumeric runs.
+    """
+    text = text.lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return text[:limit] or "search"
+
+
+def _make_search_source(query: str) -> Source:
+    """
+    Return a synthetic :class:`Source` representing a web-search topic.
+
+    Parameters
+    ----------
+    query : str
+        Natural-language search query.
+
+    Returns
+    -------
+    Source
+        Source with ``kind="search"`` and ``scraped_ok=True``.
+    """
+    return Source(
+        url=f"search://{query}",
+        title=f"Web search: {query}",
+        summary=f"Topic to investigate via web research: {query}",
+        full_text=f"Topic to investigate via web research: {query}",
+        scraped_ok=True,
+        kind="search",
+    )
+
 
 def _check_ffmpeg() -> None:
     """
@@ -155,32 +204,40 @@ def _resolve_config_path(config_path: str | None) -> str:
     sys.exit(1)
 
 
-def _build_output_stem(urls: list[str]) -> str:
+def _build_output_stem(identifiers: list[str]) -> str:
     """
-    Build the filename stem for an episode based on its input URLs.
+    Build the filename stem for an episode from a mixed list of identifiers.
 
-    Combines the first URL's hostname, a 6-character SHA-1 digest of all
-    URLs joined by ``"\\n"``, and today's ISO date to keep stems short
-    while remaining collision-resistant when the same domain is run
-    multiple times in a day.
+    Derives a human-readable label from the first identifier (hostname for
+    URLs, filename stem for ``file://`` URIs, slugified query for
+    ``search://`` URIs), appends a 6-character SHA-1 digest of all
+    identifiers for collision resistance, and suffixes today's ISO date.
 
     Parameters
     ----------
-    urls : list[str]
-        URLs supplied on the command line.
+    identifiers : list[str]
+        URLs, ``file://`` URIs, or ``search://`` URIs (any mix).
 
     Returns
     -------
     str
         Filename stem without extension, e.g. ``"arxiv.org-a1b2c3-2026-05-23"``.
     """
-    parsed = urlparse(urls[0])
-    host = parsed.netloc or "podcast"
-    # Trim leading "www."
-    if host.startswith("www."):
-        host = host[4:]
-    digest = hashlib.sha1("\n".join(urls).encode("utf-8")).hexdigest()[:6]
-    return f"{host}-{digest}-{date.today().isoformat()}"
+    first = identifiers[0]
+    if first.startswith(("http://", "https://")):
+        parsed = urlparse(first)
+        host = parsed.netloc or "podcast"
+        if host.startswith("www."):
+            host = host[4:]
+        label = host
+    elif first.startswith("file://"):
+        label = Path(first[len("file://"):]).stem or "file"
+    elif first.startswith("search://"):
+        label = _slugify(first[len("search://"):])
+    else:
+        label = Path(first).stem or "podcast"
+    digest = hashlib.sha1("\n".join(identifiers).encode("utf-8")).hexdigest()[:6]
+    return f"{label}-{digest}-{date.today().isoformat()}"
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +263,20 @@ def cli() -> None:
 # ---------------------------------------------------------------------------
 
 @cli.command("run")
-@click.argument("urls", nargs=-1, required=True)
+@click.argument("inputs", nargs=-1, required=False, metavar="URL_OR_FILE...")
+@click.option(
+    "-f", "--file",
+    "files",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Local document(s) to include (txt, md, html, pdf). Repeatable.",
+)
+@click.option(
+    "-s", "--search",
+    "search_queries",
+    multiple=True,
+    help="Web search query/queries to seed the podcast. Repeatable.",
+)
 @click.option(
     "-c", "--config",
     "config_path",
@@ -277,7 +347,9 @@ def cli() -> None:
     help="Generate a report folder (sources, script, research, links, overview) alongside the podcast.",
 )
 def run(
-    urls: tuple[str, ...],
+    inputs: tuple[str, ...],
+    files: tuple[Path, ...],
+    search_queries: tuple[str, ...],
     config_path: str | None,
     research_rounds: int | None,
     target_duration: float | None,
@@ -288,11 +360,31 @@ def run(
     verbose: bool,
     report: bool,
 ) -> None:
-    """Fetch one or more URLs and generate a two-voice podcast MP3."""
+    """Fetch URLs, local files, or web search queries and generate a two-voice podcast MP3."""
     load_dotenv()
     _setup_logging(verbose)
 
-    url_list = list(urls)
+    url_list: list[str] = []
+    file_paths: list[Path] = list(files)
+    for arg in inputs:
+        if arg.startswith(("http://", "https://")):
+            url_list.append(arg)
+        elif Path(arg).is_file():
+            file_paths.append(Path(arg))
+        else:
+            click.echo(
+                f"[ERROR] Argument is neither a URL nor an existing file: {arg!r}",
+                err=True,
+            )
+            sys.exit(1)
+    search_list = list(search_queries)
+
+    if not (url_list or file_paths or search_list):
+        click.echo(
+            "[ERROR] No inputs provided. Pass URL(s), -f FILE, or -s 'search query'.",
+            err=True,
+        )
+        sys.exit(1)
 
     # ------------------------------------------------------------------
     # 0. Preflight checks
@@ -364,43 +456,72 @@ def run(
         dialogue_cfg["target_duration_minutes"] = target_duration
         gemini_cfg = {**gemini_cfg, "dialogue": dialogue_cfg}
 
+    # Auto-bump research when the only inputs are search queries.
+    if (
+        research_rounds == 0
+        and search_list
+        and not (url_list or file_paths)
+    ):
+        logger.info(
+            "Search-only run with no research rounds — bumping to 1 to materialise content."
+        )
+        research_rounds = 1
+
     tracker = TokenTracker(pricing=pricing_cfg, service_tier=service_tier)
 
-    logger.info("Processing %d URL(s) | research rounds: %d", len(url_list), research_rounds)
+    total_inputs = len(url_list) + len(file_paths) + len(search_list)
+    logger.info(
+        "Processing %d input(s) (%d URL(s), %d file(s), %d search query/queries) | research rounds: %d",
+        total_inputs, len(url_list), len(file_paths), len(search_list), research_rounds,
+    )
 
     # ------------------------------------------------------------------
     # 2. Scrape → Research → Dialogue → TTS
     # ------------------------------------------------------------------
     with _make_progress(disable=no_progress) as progress:
 
-        # 2a. Scraping
-        scrape_task = progress.add_task(
-            f"[cyan]Scraping[/cyan] {len(url_list)} URL(s)…",
-            total=len(url_list),
-        )
-        sources = scrape_urls(
-            url_list,
-            timeout=scrape_timeout,
-            user_agent=web_user_agent,
-            progress=progress,
-            task_id=scrape_task,
-        )
+        # 2a. Collect all sources (URLs, local files, search queries)
+        scraped_sources: list[Source] = []
+        if url_list:
+            scrape_task = progress.add_task(
+                f"[cyan]Scraping[/cyan] {len(url_list)} URL(s)…",
+                total=len(url_list),
+            )
+            scraped_sources = scrape_urls(
+                url_list,
+                timeout=scrape_timeout,
+                user_agent=web_user_agent,
+                progress=progress,
+                task_id=scrape_task,
+            )
 
-        ok_sources = [s for s in sources if s.scraped_ok]
+        file_sources: list[Source] = []
+        if file_paths:
+            load_task = progress.add_task(
+                f"[cyan]Loading[/cyan] {len(file_paths)} local file(s)…",
+                total=len(file_paths),
+            )
+            file_sources = load_local_files(file_paths, progress=progress, task_id=load_task)
+
+        search_sources: list[Source] = [_make_search_source(q) for q in search_list]
+
+        all_sources = scraped_sources + file_sources + search_sources
+
+        ok_sources = [s for s in all_sources if s.scraped_ok]
         if not ok_sources:
             progress.stop()
-            failed_urls = ", ".join(s.url for s in sources)
+            failed_inputs = ", ".join(s.url for s in all_sources)
             click.echo(
-                f"[ERROR] Could not extract content from any URL: {failed_urls}",
+                f"[ERROR] Could not extract content from any input: {failed_inputs}",
                 err=True,
             )
             sys.exit(1)
 
-        if len(ok_sources) < len(sources):
-            failed = [s.url for s in sources if not s.scraped_ok]
+        if len(ok_sources) < len(all_sources):
+            failed = [s.url for s in all_sources if not s.scraped_ok]
             logger.warning(
-                "Scraping failed for %d/%d URL(s); continuing with the rest. Failed: %s",
-                len(failed), len(sources), ", ".join(failed),
+                "Input failed for %d/%d source(s); continuing with the rest. Failed: %s",
+                len(failed), len(all_sources), ", ".join(failed),
             )
 
         # 2b. Optional iterative research
@@ -482,7 +603,12 @@ def run(
     # ------------------------------------------------------------------
     # 3. Audio export (skipped when --no-audio)
     # ------------------------------------------------------------------
-    stem = _build_output_stem(url_list)
+    identifiers: list[str] = (
+        url_list
+        + [f"file://{p.resolve()}" for p in file_paths]
+        + [f"search://{q}" for q in search_list]
+    )
+    stem = _build_output_stem(identifiers)
     saved: Path | None = None
     if not no_audio:
         filename = f"{stem}.{output_fmt}"
