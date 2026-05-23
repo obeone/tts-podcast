@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.venv/
+venv/
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Generated artifacts
+*.mp3
+*.wav
+output/
+podcasts/
+/tts_*/
+
+# Stray "~" folder if a CLI invocation passes ~/path unexpanded
+/~/
+
+# Override the global .omc ignore: keep design plans tracked, drop runtime state.
+!.omc/
+.omc/*
+!.omc/plans/

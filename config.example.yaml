@@ -1,0 +1,153 @@
+# tts-podcast — Configuration Example
+# Copy this file to config.yaml (or to $XDG_CONFIG_HOME/tts-podcast/config.yaml)
+# and fill in your values.
+# Keys ending with _env reference the name of an environment variable
+# that will be read at runtime (never store secrets directly here).
+
+web:
+  # User-Agent header sent when fetching article URLs
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36"
+  # HTTP timeout in seconds for article page fetches
+  timeout_seconds: 15
+
+gemini:
+  # Name of the environment variable holding your Gemini API key
+  api_key_env: GEMINI_API_KEY
+  # Gemini model for dialogue generation (text / script writer)
+  text_model: gemini-3.5-flash
+  # Gemini model for TTS audio generation
+  tts_model: gemini-3.1-flash-tts-preview
+  # Optional: API service tier — "flex" (cheaper/slower) or "priority"
+  # (faster/pricier).  Omit or leave empty for standard tier.
+  # TTS does not support service tiers.
+  # service_tier: flex
+  # Language for the generated podcast dialogue and TTS preamble
+  language: French
+  speaker1:
+    name: Alex
+    voice: Puck
+    personality: "enthusiastic, curious, quick to get excited about tech innovations"
+  speaker2:
+    name: Jordan
+    voice: Charon
+    personality: "analytical, mildly skeptical, adds nuance and historical context"
+  dialogue:
+    target_word_count: 1200 # minimum word count for the full dialogue
+  tts_style:
+    pace: "slow and deliberate" # natural-language pace for TTS preamble
+    scene: "Two friends co-hosting a casual French tech podcast in a cozy studio"
+    temperature: 1.2 # 0.0–2.0 — higher = more expressive
+  # Optional override for the research model. Defaults to gemini.text_model.
+  # research:
+  #   model: gemini-2.5-flash
+
+research:
+  # Default number of Google-Search-grounded research rounds (override
+  # per run with -R / --research).  0 disables research entirely.
+  rounds_default: 0
+  # Optional override of the model used for research (Gemini + Google Search).
+  # Defaults to gemini.text_model when omitted.
+  # model: gemini-3.5-flash
+
+scraping:
+  # HTTP request timeout in seconds for article fetches
+  timeout_seconds: 10
+
+output:
+  # Directory where the generated podcast file will be saved.
+  # Override per-run with --output-dir.
+  dir: "."
+  # Output format: mp3 or wav
+  format: mp3
+
+# Per-model pricing for token cost estimation (USD per 1 million tokens).
+# Update these values to match current Gemini pricing at:
+# https://ai.google.dev/gemini-api/docs/pricing
+#
+# Flat format (applies regardless of service_tier):
+#   model-name:
+#     input_per_1m: 0.50
+#     output_per_1m: 3.00
+#
+# Tier-aware format (selected by gemini.service_tier):
+#   model-name:
+#     standard:
+#       input_per_1m: 0.50
+#       output_per_1m: 3.00
+#     flex:
+#       input_per_1m: 0.25
+#       output_per_1m: 1.50
+
+pricing:
+  # ── Text models ──────────────────────────────────────────────
+
+  # 3.5 Flash — official tiered pricing (https://ai.google.dev/gemini-api/docs/pricing)
+  gemini-3.5-flash:
+    standard:
+      input_per_1m: 1.50
+      output_per_1m: 9.00
+    flex:
+      input_per_1m: 0.75
+      output_per_1m: 4.50
+    priority:
+      input_per_1m: 2.70
+      output_per_1m: 16.20
+
+  gemini-2.5-pro:
+    standard:
+      input_per_1m: 1.25
+      output_per_1m: 10.00
+    flex:
+      input_per_1m: 0.625
+      output_per_1m: 5.00
+    priority:
+      input_per_1m: 2.25
+      output_per_1m: 18.00
+
+  gemini-2.5-flash:
+    standard:
+      input_per_1m: 0.30
+      output_per_1m: 2.50
+    flex:
+      input_per_1m: 0.15
+      output_per_1m: 1.25
+    priority:
+      input_per_1m: 0.54
+      output_per_1m: 4.50
+
+  gemini-2.5-flash-lite:
+    standard:
+      input_per_1m: 0.10
+      output_per_1m: 0.40
+    flex:
+      input_per_1m: 0.05
+      output_per_1m: 0.20
+    priority:
+      input_per_1m: 0.18
+      output_per_1m: 0.72
+
+  # 2.0 models: no flex/priority tiers available
+  gemini-2.0-flash:
+    input_per_1m: 0.10
+    output_per_1m: 0.40
+
+  gemini-2.0-flash-lite:
+    input_per_1m: 0.075
+    output_per_1m: 0.30
+
+  # ── TTS models (no service tier support) ─────────────────────
+
+  # 3.1 Flash TTS Preview — not on the public pricing page at time of writing.
+  # Estimate aligned with gemini-2.5-pro-preview-tts; update once Google
+  # publishes the official rate.
+  gemini-3.1-flash-tts-preview:
+    input_per_1m: 1.00
+    output_per_1m: 20.00
+
+  gemini-2.5-flash-preview-tts:
+    input_per_1m: 0.50
+    output_per_1m: 10.00
+
+  gemini-2.5-pro-preview-tts:
+    input_per_1m: 1.00
+    output_per_1m: 20.00
