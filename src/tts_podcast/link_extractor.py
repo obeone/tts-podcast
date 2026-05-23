@@ -224,8 +224,8 @@ def extract_links(sources: list[Source]) -> LinkReport:
     seen_urls: set[str] = set()
 
     for source in sources:
-        # 1. Primary article URL → source
-        if source.url and source.url not in seen_urls:
+        # 1. Primary article URL → source (skip non-http schemes like file:// and search://)
+        if source.url and source.url not in seen_urls and source.url.startswith(("http://", "https://")):
             seen_urls.add(source.url)
             report.sources.append(
                 CategorisedLink(
