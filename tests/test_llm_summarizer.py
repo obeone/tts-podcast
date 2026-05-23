@@ -1,0 +1,227 @@
+"""
+Tests for the llm_summarizer module.
+
+Verifies dialogue generation, chunking, and research-notes injection
+behaviour with a mocked Gemini client.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from unittest.mock import MagicMock, patch
+
+
+from tts_podcast.llm_summarizer import DialogueChunk, _audio_tags_enabled, generate_dialogue
+
+
+# ---------------------------------------------------------------------------
+# Fixtures and helpers
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FakeArticle:
+    """Minimal article stub for testing."""
+
+    title: str
+    url: str
+    summary: str
+    full_text: str = ""
+
+
+GEMINI_CFG = {
+    "api_key": "test-api-key",
+    "text_model": "gemini-2.5-flash",
+    "tts_model": "gemini-2.5-flash-preview-tts",
+    "speaker1": {"name": "Alex", "voice": "Puck"},
+    "speaker2": {"name": "Jordan", "voice": "Charon"},
+}
+
+SAMPLE_ARTICLES = [
+    FakeArticle(
+        title="Rust hits 1.0 stability milestone",
+        url="https://example.com/rust",
+        summary="Rust language announces major stability improvements.",
+        full_text="Rust language announces major stability improvements in version 1.0.",
+    ),
+]
+
+SHORT_DIALOGUE = """\
+Alex: Hey Jordan, ready to dive into today's article?
+Jordan: Absolutely! What caught your eye?
+Alex: There's a fascinating piece about Rust hitting stability milestones.
+Jordan: Oh interesting! Tell me more.
+Alex: The language team says performance improved by 40 percent.
+Jordan: That's huge for systems programming.
+"""
+
+
+def _mock_genai_response(text: str):
+    """
+    Build a mock genai module whose Client.models.generate_content returns text.
+
+    Parameters
+    ----------
+    text : str
+        The dialogue text the mock should return.
+
+    Returns
+    -------
+    MagicMock
+        A mock that mimics the genai module interface.
+    """
+    mock_response = MagicMock()
+    mock_response.text = text
+
+    mock_model = MagicMock()
+    mock_model.generate_content.return_value = mock_response
+
+    mock_client_instance = MagicMock()
+    mock_client_instance.models = mock_model
+
+    mock_genai = MagicMock()
+    mock_genai.Client.return_value = mock_client_instance
+
+    return mock_genai
+
+
+def _captured_prompt(mock_genai) -> str:
+    """Return the prompt string that was sent to the mocked Gemini client."""
+    call = mock_genai.Client.return_value.models.generate_content.call_args
+    return call.kwargs.get("contents") or call.args[1]
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateDialogue:
+    """Unit tests for generate_dialogue()."""
+
+    def test_returns_non_empty_list_of_chunks(self):
+        """generate_dialogue returns at least one DialogueChunk on success."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        assert isinstance(chunks, list)
+        assert len(chunks) > 0
+        assert all(isinstance(c, DialogueChunk) for c in chunks)
+
+    def test_chunks_contain_text(self):
+        """Every returned DialogueChunk has non-empty text."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        for chunk in chunks:
+            assert chunk.text.strip() != ""
+
+    def test_chunks_have_sequential_indices(self):
+        """DialogueChunk objects are indexed sequentially from 0."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        for expected_index, chunk in enumerate(chunks):
+            assert chunk.index == expected_index
+
+    def test_genai_client_called_with_correct_model(self):
+        """Gemini client is called with the model specified in gemini_cfg."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        mock_genai.Client.assert_called_once_with(api_key="test-api-key")
+        call_kwargs = mock_genai.Client.return_value.models.generate_content.call_args
+        assert call_kwargs.kwargs.get("model") == "gemini-2.5-flash"
+
+    def test_passes_max_output_tokens(self):
+        """generate_dialogue must pass max_output_tokens=8192 to the Gemini API."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        call_kwargs = mock_genai.Client.return_value.models.generate_content.call_args.kwargs
+        config_obj = call_kwargs.get("config")
+        assert config_obj is not None
+        assert config_obj.max_output_tokens == 8192
+
+
+class TestResearchNotesInjection:
+    """Verify generate_dialogue injects research notes into the prompt only when provided."""
+
+    def test_no_research_section_when_notes_empty(self):
+        """No 'Complementary research' header appears when research_notes is empty."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        prompt = _captured_prompt(mock_genai)
+        assert "Complementary research" not in prompt
+
+    def test_research_notes_appear_in_prompt(self):
+        """When research_notes is supplied, its text appears in the prompt before Articles."""
+        notes = "### Research round 1\n\n- Background fact A (https://src/a)\n- Recent dev B (https://src/b)"
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(
+                SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan",
+                research_notes=notes,
+            )
+
+        prompt = _captured_prompt(mock_genai)
+        assert "Complementary research" in prompt
+        assert "Background fact A" in prompt
+        assert "Recent dev B" in prompt
+        assert prompt.index("Complementary research") < prompt.index("Articles:")
+
+    def test_whitespace_only_notes_treated_as_empty(self):
+        """A whitespace-only research_notes string is treated as no-research."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(
+                SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan",
+                research_notes="   \n\t  ",
+            )
+
+        prompt = _captured_prompt(mock_genai)
+        assert "Complementary research" not in prompt
+
+
+class TestAudioTagsEnabled:
+    """Unit tests for the _audio_tags_enabled helper."""
+
+    def test_auto_detects_gemini_3_tts_model(self):
+        cfg = {"tts_model": "gemini-3.1-flash-preview-tts"}
+        assert _audio_tags_enabled(cfg) is True
+
+    def test_auto_rejects_gemini_2_5_tts_model(self):
+        cfg = {"tts_model": "gemini-2.5-flash-preview-tts"}
+        assert _audio_tags_enabled(cfg) is False
+
+    def test_explicit_on_overrides_unsupported_model(self):
+        cfg = {
+            "tts_model": "gemini-2.5-flash-preview-tts",
+            "tts_style": {"audio_tags": "on"},
+        }
+        assert _audio_tags_enabled(cfg) is True
+
+    def test_explicit_off_overrides_supported_model(self):
+        cfg = {
+            "tts_model": "gemini-3.1-flash-preview-tts",
+            "tts_style": {"audio_tags": "off"},
+        }
+        assert _audio_tags_enabled(cfg) is False
+
+    def test_missing_tts_model_defaults_off(self):
+        assert _audio_tags_enabled({}) is False
