@@ -14,12 +14,13 @@ from dataclasses import dataclass, field
 @dataclass
 class Source:
     """
-    Represents a single article fetched from an arbitrary URL.
+    Represents a single input source for the podcast pipeline.
 
     Attributes
     ----------
     url : str
-        The URL of the source article.
+        The URL of the source article, a ``file://`` URI for local files,
+        or a ``search://`` URI for web-search queries.
     title : str
         Title extracted from the page metadata, or a fallback derived from
         the URL when no title was found.
@@ -31,6 +32,10 @@ class Source:
     scraped_ok : bool
         ``True`` when scraping returned non-empty content, ``False``
         otherwise.
+    kind : str
+        Input kind — one of ``"url"`` (default, fetched from the web),
+        ``"file"`` (read from a local file path), or ``"search"`` (a
+        natural-language query to be investigated via web research).
     """
 
     url: str
@@ -38,3 +43,4 @@ class Source:
     summary: str = ""
     full_text: str = field(default="")
     scraped_ok: bool = field(default=False)
+    kind: str = field(default="url")
