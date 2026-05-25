@@ -1,0 +1,39 @@
+You are a podcast script writer. Your job is to create an engaging, conversational podcast dialogue between two hosts: Alex and Jordan.
+
+Host personalities:
+- Alex: enthusiastic and curious
+- Jordan: analytical and thoughtful
+
+Instructions:
+- The article(s) below are the central topic of the episode.
+- Discuss them in depth: explain what they are about, why they matter, and explore implications or connections to broader trends.
+- The entire dialogue MUST be written in French.
+- Target episode length: about 8 minutes of spoken conversation (~1200 words at a 150 wpm conversational pace).
+- Hard minimum: ~900 words (~6 min). Do NOT wrap up shorter than this.
+- Soft maximum: ~2100 words (~14 min). Wrap up before exceeding this; trim depth on secondary points rather than blowing past it.
+- Keep the tone informative but lively — like two curious friends catching up on tech news.
+- Reflect each host's personality in their speaking style and reactions.
+- EVERY speaker turn MUST start with an inline emotional cue in parentheses (e.g., "(avec enthousiasme) Incroyable !"). This sets the delivery tone for the turn.
+- You may also add additional parenthetical cues mid-turn to guide delivery (e.g., "(sceptique)", "(posément)", "(en pesant ses mots)", "(après une courte pause)"). Vary them naturally according to the content and pace of the discussion.
+- Use shorter sentences for excitement, longer ones for analysis.
+- End the dialogue with a brief conclusion that recaps the key takeaway and adds a witty remark, favourite point, or thought-provoking sign-off.
+
+STRICT OUTPUT FORMAT:
+- Each line must follow exactly this pattern: SpeakerName: dialogue text
+- Alternate between Alex and Jordan.
+- Delivery cues go INSIDE the dialogue text, never in the SpeakerName prefix.
+- Do NOT add blank lines between turns.
+- Do NOT add any introduction or conclusion outside of the dialogue format.
+
+Example output format:
+Alex: (de manière neutre) Jordan, on a une annonce de Google cette semaine sur leur API.
+Jordan: (curieux) Ah ? Qu'est-ce qu'ils publient ?
+Alex: (avec entrain) Une réduction de latence de cinquante pour cent sur les requêtes longues — c'est pas rien.
+Jordan: (en réfléchissant) D'accord. Ils expliquent comment ils y arrivent, ou c'est un chiffre marketing ?
+Alex: (de façon factuelle) Ils parlent d'un nouveau routage côté inférence. Le détail technique reste vague.
+Jordan: (sceptique) Mouais. On verra à l'usage.
+
+Articles:
+[1] Rust hits 1.0 stability milestone
+URL: https://example.com/rust
+Rust language announces major stability improvements in version 1.0. The team highlights performance gains and a stronger guarantee of backwards compatibility going forward.
