@@ -44,6 +44,7 @@ from tts_podcast.local_loader import load_local_files
 from tts_podcast.models import Source
 from tts_podcast.report_generator import generate_report
 from tts_podcast.research import conduct_research
+from tts_podcast.style_presets import STYLE_PRESETS
 from tts_podcast.token_tracker import TokenTracker
 from tts_podcast.tts_generator import generate_audio_chunks
 from tts_podcast.user_agent import BROWSER_USER_AGENT
@@ -346,6 +347,55 @@ def cli() -> None:
     default=True,
     help="Generate a report folder (sources, script, research, links, overview) alongside the podcast.",
 )
+@click.option(
+    "--preset",
+    "preset",
+    type=click.Choice([*STYLE_PRESETS.keys(), "none"], case_sensitive=False),
+    default=None,
+    help=(
+        "Style & angle (optional): named style preset for the dialogue. "
+        "Use 'none' to disable a configured gemini.style.preset for one run."
+    ),
+)
+@click.option(
+    "--style",
+    "style_text",
+    default=None,
+    help=(
+        "Style & angle (optional): free-text style guidance for the dialogue "
+        "(capped at 500 chars). Composes with --preset when both are set. "
+        "Pass an empty string to override a configured gemini.style.text."
+    ),
+)
+@click.option(
+    "--speaker1-style",
+    "speaker1_style",
+    default=None,
+    help=(
+        "Style & angle (optional): per-episode overlay for speaker 1 "
+        "(capped at 500 chars). Renders in a dedicated 'Episode-specific "
+        "adjustments:' block; the baseline personality (and TTS voice "
+        "acting) stays unchanged."
+    ),
+)
+@click.option(
+    "--speaker2-style",
+    "speaker2_style",
+    default=None,
+    help=(
+        "Style & angle (optional): per-episode overlay for speaker 2 "
+        "(capped at 500 chars). Same semantics as --speaker1-style."
+    ),
+)
+@click.option(
+    "--angle",
+    "angle",
+    default=None,
+    help=(
+        "Style & angle (optional): episode angle (capped at 500 chars). "
+        "Steers the dialogue prompt and the first research round only."
+    ),
+)
 def run(
     inputs: tuple[str, ...],
     files: tuple[Path, ...],
@@ -359,6 +409,11 @@ def run(
     no_progress: bool,
     verbose: bool,
     report: bool,
+    preset: str | None,
+    style_text: str | None,
+    speaker1_style: str | None,
+    speaker2_style: str | None,
+    angle: str | None,
 ) -> None:
     """Fetch URLs, local files, or web search queries and generate a two-voice podcast MP3."""
     load_dotenv()
@@ -456,6 +511,27 @@ def run(
         dialogue_cfg["target_duration_minutes"] = target_duration
         gemini_cfg = {**gemini_cfg, "dialogue": dialogue_cfg}
 
+    # CLI style/angle flags override gemini.style.* and gemini.speakerN.style_overlay.
+    # Writes to dedicated keys only — gemini.speakerN.personality is NEVER mutated
+    # so the TTS preamble keeps reading the baseline personality verbatim.
+    if preset is not None or style_text is not None or angle is not None:
+        style_cfg = dict(gemini_cfg.get("style", {}) or {})
+        if preset is not None:
+            style_cfg["preset"] = preset
+        if style_text is not None:
+            style_cfg["text"] = style_text
+        if angle is not None:
+            style_cfg["angle"] = angle
+        gemini_cfg = {**gemini_cfg, "style": style_cfg}
+    if speaker1_style is not None:
+        speaker1_cfg = dict(gemini_cfg.get("speaker1", {}) or {})
+        speaker1_cfg["style_overlay"] = speaker1_style
+        gemini_cfg = {**gemini_cfg, "speaker1": speaker1_cfg}
+    if speaker2_style is not None:
+        speaker2_cfg = dict(gemini_cfg.get("speaker2", {}) or {})
+        speaker2_cfg["style_overlay"] = speaker2_style
+        gemini_cfg = {**gemini_cfg, "speaker2": speaker2_cfg}
+
     # Auto-bump research when the only inputs are search queries.
     if (
         research_rounds == 0
@@ -538,6 +614,7 @@ def run(
                 token_tracker=tracker,
                 progress=progress,
                 task_id=research_task,
+                angle=gemini_cfg.get("style", {}).get("angle"),
             )
             progress.update(
                 research_task,
@@ -731,6 +808,24 @@ def config_init(output_path: str) -> None:
         sp2.get("personality", "analytical, mildly skeptical, adds nuance and historical context"),
     )
 
+    click.echo("\n── Style & angle (optional) ────────────────────────────────")
+    style_existing = existing.get("gemini", {}).get("style", {}) if isinstance(existing.get("gemini", {}).get("style"), dict) else {}
+    style_preset = _prompt(
+        "Default preset (casual, academic, humorous, debate, vulgarized; blank to skip)",
+        str(style_existing.get("preset", "")),
+        show_default=True,
+    )
+    style_text = _prompt(
+        "Default style guidance (free text, blank to skip)",
+        str(style_existing.get("text", "")),
+        show_default=True,
+    )
+    style_angle = _prompt(
+        "Default episode angle (blank to skip)",
+        str(style_existing.get("angle", "")),
+        show_default=True,
+    )
+
     click.echo("\n── Research ──────────────────────────────────────────────────")
     research_rounds_default = _prompt(
         "Default research rounds (0 disables; override per run with -R)",
@@ -777,6 +872,17 @@ def config_init(output_path: str) -> None:
     }
     if gemini_tier.strip():
         cfg["gemini"]["service_tier"] = gemini_tier.strip()
+
+    # Style & angle: write only the non-empty values under gemini.style.
+    style_block: dict[str, str] = {}
+    if style_preset.strip():
+        style_block["preset"] = style_preset.strip()
+    if style_text.strip():
+        style_block["text"] = style_text.strip()
+    if style_angle.strip():
+        style_block["angle"] = style_angle.strip()
+    if style_block:
+        cfg["gemini"]["style"] = style_block
 
     if not cfg["pricing"]:
         example = Path(__file__).parent.parent.parent / "config.example.yaml"
