@@ -27,10 +27,17 @@ gemini:
     name: Alex
     voice: Puck
     personality: "enthusiastic, curious, quick to get excited about tech innovations"
+    # Optional per-episode overlay applied to the dialogue prompt only — the TTS
+    # voice acting keeps reading the baseline `personality` above unchanged.
+    # CLI flag --speaker1-style overrides this for one run.
+    # style_overlay: ""
   speaker2:
     name: Jordan
     voice: Charon
     personality: "analytical, mildly skeptical, adds nuance and historical context"
+    # Optional per-episode overlay (same semantics as speaker1.style_overlay).
+    # CLI flag --speaker2-style overrides this for one run.
+    # style_overlay: ""
   dialogue:
     # Target episode duration in minutes.  CLI -d/--duration overrides.
     target_duration_minutes: 8
@@ -46,6 +53,18 @@ gemini:
     pace: "slow and deliberate" # natural-language pace for TTS preamble
     scene: "Two friends co-hosting a casual French tech podcast in a cozy studio"
     temperature: 1.2 # 0.0–2.0 — higher = more expressive
+  # Style & angle (optional) — shape the dialogue content. CLI flags
+  # --preset / --style / --angle override these values for one run; the
+  # preset name must match a key in tts_podcast.style_presets.STYLE_PRESETS;
+  # unknown names error at parse time.
+  # style:
+    # Named preset: casual, academic, humorous, debate, vulgarized.
+    # preset: "academic"
+    # Free-text style guidance (capped at 500 chars) — composes with preset.
+    # text: "extra rigorous, French academic feel"
+    # Episode angle (capped at 500 chars). Steers the dialogue and the
+    # first research round; later rounds inherit it via prior notes only.
+    # angle: "the regulatory implications"
   # Optional override for the research model. Defaults to gemini.text_model.
   # research:
   #   model: gemini-2.5-flash
