@@ -20,6 +20,7 @@ from google import genai
 from google.genai import types
 
 from tts_podcast.retry import gemini_retry
+from tts_podcast.style_presets import truncate_with_warning, validate_preset
 
 if TYPE_CHECKING:
     from rich.progress import Progress
@@ -91,7 +92,7 @@ conversational podcast dialogue between two hosts: {speaker1} and {speaker2}.
 Host personalities:
 - {speaker1}: {speaker1_personality}
 - {speaker2}: {speaker2_personality}
-
+{speaker_adjustments_block}
 Instructions:
 - The article(s) below are the central topic of the episode.
 - Discuss them in depth: explain what they are about, why they matter, \
@@ -104,7 +105,7 @@ shorter than this.
 - Soft maximum: ~{max_words} words (~{max_minutes:.0f} min). Wrap up before \
 exceeding this; trim depth on secondary points rather than blowing past it.
 - Keep the tone informative but lively — like two curious friends catching up on tech news.
-- Reflect each host's personality in their speaking style and reactions.
+{style_block}{angle_line}- Reflect each host's personality in their speaking style and reactions.
 {delivery_cues_guidance}
 - Use shorter sentences for excitement, longer ones for analysis.
 - End the dialogue with a brief conclusion that recaps the key takeaway and \
@@ -164,6 +165,103 @@ def _audio_tags_enabled(gemini_cfg: dict) -> bool:
     return tts_model.startswith("gemini-3")
 
 
+def _render_speaker_adjustments_block(
+    speaker1_name: str,
+    speaker2_name: str,
+    speaker1_overlay: str | None,
+    speaker2_overlay: str | None,
+) -> str:
+    """
+    Render the per-episode speaker-adjustments block.
+
+    Returns the empty string when both overlays are absent so that the
+    surrounding prompt stays byte-identical to the no-overlay case.
+
+    Parameters
+    ----------
+    speaker1_name, speaker2_name : str
+        Host display names.
+    speaker1_overlay, speaker2_overlay : str or None
+        Episode-specific overlay text for each speaker.  ``None`` and the
+        empty string both mean "no overlay".
+
+    Returns
+    -------
+    str
+        Either ``""`` or a block starting and ending with ``"\\n"`` that lists
+        only the populated overlays.
+    """
+    overlays: list[tuple[str, str]] = []
+    if speaker1_overlay:
+        overlays.append((speaker1_name, speaker1_overlay))
+    if speaker2_overlay:
+        overlays.append((speaker2_name, speaker2_overlay))
+    if not overlays:
+        return ""
+    bullets = "\n".join(f"- {name}: {text}" for name, text in overlays)
+    return f"\nEpisode-specific adjustments:\n{bullets}\n"
+
+
+def _render_style_block(
+    preset_fragment: str | None,
+    style_text: str | None,
+) -> str:
+    """
+    Render the ``Stylistic guidance:`` sub-block inside ``Instructions:``.
+
+    Returns the empty string when neither input is set, preserving prompt
+    byte-identity for runs that don't use the style flags.
+
+    Parameters
+    ----------
+    preset_fragment : str or None
+        Resolved prompt fragment for the selected preset, if any.
+    style_text : str or None
+        Free-text style guidance, if any.
+
+    Returns
+    -------
+    str
+        Either ``""`` or a block starting with ``"\\n"`` (to leave a blank
+        line before the header) and ending with ``"\\n\\n"`` (to separate
+        from the bullet that follows).
+    """
+    parts: list[str] = []
+    if preset_fragment:
+        parts.append(preset_fragment.strip())
+    if style_text:
+        parts.append(style_text.strip())
+    if not parts:
+        return ""
+    body = "\n\n".join(parts)
+    return f"\nStylistic guidance:\n{body}\n\n"
+
+
+def _render_angle_line(angle: str | None) -> str:
+    """
+    Render the ``- Episode angle:`` bullet inside ``Instructions:``.
+
+    Returns the empty string when *angle* is unset so the existing bullet
+    list stays untouched.
+
+    Parameters
+    ----------
+    angle : str or None
+        Free-text episode angle (already truncated).
+
+    Returns
+    -------
+    str
+        Either ``""`` or a single bullet line ending with ``"\\n"``.
+    """
+    if not angle:
+        return ""
+    return (
+        f"- Episode angle: {angle.strip()}. Weave this through the "
+        "conversation; don't just mention it once.\n"
+    )
+
+
 def _build_prompt(
     articles: list,
     speaker1_name: str,
@@ -177,6 +275,12 @@ def _build_prompt(
     language: str = "French",
     audio_tags: bool = False,
     research_notes: str = "",
+    *,
+    preset: str | None = None,
+    style_text: str | None = None,
+    speaker1_overlay: str | None = None,
+    speaker2_overlay: str | None = None,
+    angle: str | None = None,
 ) -> str:
     """
     Build the full LLM prompt from the article list, speaker names, and personalities.
@@ -215,6 +319,21 @@ def _build_prompt(
         Complementary research notes (markdown bullet points) to inject into
         the prompt under a "Complementary research" section.  Empty string
         disables the injection.
+    preset : str or None, keyword-only, optional
+        Style preset name resolved via :func:`validate_preset`.  Adds a
+        ``Stylistic guidance:`` sub-block inside ``Instructions:`` when set.
+    style_text : str or None, keyword-only, optional
+        Free-text style guidance.  Truncated to 500 chars.  Renders inside
+        the same ``Stylistic guidance:`` sub-block as *preset*; both may be
+        set, in which case the preset fragment comes first.
+    speaker1_overlay, speaker2_overlay : str or None, keyword-only, optional
+        Per-speaker style overlays.  Truncated to 500 chars.  Render in a
+        dedicated ``Episode-specific adjustments:`` block placed between
+        ``Host personalities:`` and ``Instructions:``.  Never mutate the
+        baseline personality strings.
+    angle : str or None, keyword-only, optional
+        Free-text episode angle.  Truncated to 500 chars.  Renders as a
+        ``- Episode angle: …`` bullet inside ``Instructions:``.
 
     Returns
     -------
@@ -248,6 +367,25 @@ def _build_prompt(
         else ""
     )
 
+    preset_fragment = validate_preset(preset)
+    style_text_resolved = truncate_with_warning(style_text, "style")
+    speaker1_overlay_resolved = truncate_with_warning(
+        speaker1_overlay, "speaker1-style"
+    )
+    speaker2_overlay_resolved = truncate_with_warning(
+        speaker2_overlay, "speaker2-style"
+    )
+    angle_resolved = truncate_with_warning(angle, "angle")
+
+    speaker_adjustments_block = _render_speaker_adjustments_block(
+        speaker1_name,
+        speaker2_name,
+        speaker1_overlay_resolved,
+        speaker2_overlay_resolved,
+    )
+    style_block = _render_style_block(preset_fragment, style_text_resolved)
+    angle_line = _render_angle_line(angle_resolved)
+
     min_words = max(1, round(min_minutes * words_per_minute))
     target_words = max(min_words, round(target_minutes * words_per_minute))
     max_words = max(target_words, round(max_minutes * words_per_minute))
@@ -269,6 +407,9 @@ def _build_prompt(
         example_dialogue=example_dialogue,
         research_section=research_section,
         articles=articles_text,
+        speaker_adjustments_block=speaker_adjustments_block,
+        style_block=style_block,
+        angle_line=angle_line,
     )
 
 
@@ -443,6 +584,13 @@ def generate_dialogue(
     speaker2_personality = gemini_cfg.get("speaker2", {}).get("personality", "")
     language = gemini_cfg.get("language", "French")
 
+    style_cfg = gemini_cfg.get("style", {}) or {}
+    preset = style_cfg.get("preset")
+    style_text = style_cfg.get("text")
+    angle = style_cfg.get("angle")
+    speaker1_overlay = gemini_cfg.get("speaker1", {}).get("style_overlay")
+    speaker2_overlay = gemini_cfg.get("speaker2", {}).get("style_overlay")
+
     dialogue_cfg = gemini_cfg.get("dialogue", {})
     target_minutes = float(dialogue_cfg.get("target_duration_minutes", 8.0))
     wpm = int(dialogue_cfg.get("words_per_minute", 150))
@@ -470,6 +618,11 @@ def generate_dialogue(
         language=language,
         audio_tags=audio_tags,
         research_notes=research_notes,
+        preset=preset,
+        style_text=style_text,
+        speaker1_overlay=speaker1_overlay,
+        speaker2_overlay=speaker2_overlay,
+        angle=angle,
     )
 
     logger.info(
@@ -478,7 +631,7 @@ def generate_dialogue(
         gemini_cfg["text_model"],
         " with research notes" if research_notes.strip() else "",
     )
-    logger.debug("Prompt length: %d chars.", len(prompt))
+    logger.debug("Dialogue prompt (%d chars):\n%s", len(prompt), prompt)
 
     client = genai.Client(api_key=gemini_cfg["api_key"])
     service_tier = gemini_cfg.get("service_tier")
