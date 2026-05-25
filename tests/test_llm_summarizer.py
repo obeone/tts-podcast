@@ -7,11 +7,20 @@ behaviour with a mocked Gemini client.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 
-from tts_podcast.llm_summarizer import DialogueChunk, _audio_tags_enabled, generate_dialogue
+from tts_podcast.llm_summarizer import (
+    DialogueChunk,
+    _audio_tags_enabled,
+    _build_prompt,
+    generate_dialogue,
+)
+from tts_podcast.style_presets import STYLE_PRESETS
 
 
 # ---------------------------------------------------------------------------
@@ -283,3 +292,242 @@ class TestAudioTagsEnabled:
 
     def test_missing_tts_model_defaults_off(self):
         assert _audio_tags_enabled({}) is False
+
+
+# ---------------------------------------------------------------------------
+# Style / overlay / angle injections
+# ---------------------------------------------------------------------------
+
+
+def _build_prompt_default_kwargs(**overrides):
+    """Return _build_prompt kwargs matching the snapshot fixture inputs."""
+    base = {
+        "articles": SAMPLE_ARTICLES,
+        "speaker1_name": "Alex",
+        "speaker2_name": "Jordan",
+        "speaker1_personality": "enthusiastic and curious",
+        "speaker2_personality": "analytical and thoughtful",
+        "min_minutes": 6.0,
+        "target_minutes": 8.0,
+        "max_minutes": 14.0,
+        "words_per_minute": 150,
+        "language": "French",
+        "audio_tags": False,
+        "research_notes": "",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestStyleInjections:
+    """Preset and free-text style guidance render inside Instructions."""
+
+    def test_preset_injected(self):
+        prompt = _build_prompt(**_build_prompt_default_kwargs(preset="academic"))
+        assert "Stylistic guidance:" in prompt
+        assert STYLE_PRESETS["academic"].strip() in prompt
+
+    def test_style_free_text_injected(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(style_text="extra rigorous, dry tone")
+        )
+        assert "Stylistic guidance:" in prompt
+        assert "extra rigorous, dry tone" in prompt
+
+    def test_preset_plus_style_compose(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(
+                preset="academic",
+                style_text="but extra dry",
+            )
+        )
+        assert "Stylistic guidance:" in prompt
+        # Preset fragment first, free text after.
+        preset_pos = prompt.index(STYLE_PRESETS["academic"].strip())
+        text_pos = prompt.index("but extra dry")
+        assert preset_pos < text_pos
+
+    def test_no_style_means_no_header(self):
+        prompt = _build_prompt(**_build_prompt_default_kwargs())
+        assert "Stylistic guidance:" not in prompt
+
+
+class TestSpeakerOverlay:
+    """Per-speaker overlays render in a dedicated block, never mutate personality."""
+
+    def test_speaker_overlay_in_dedicated_block(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(speaker1_overlay="more skeptical than usual")
+        )
+        assert "Episode-specific adjustments:" in prompt
+        assert "- Alex: more skeptical than usual" in prompt
+        # Overlay text must NOT be inlined into the Host personalities bullet.
+        host_block_end = prompt.index("Episode-specific adjustments:")
+        host_block = prompt[: host_block_end]
+        assert "more skeptical than usual" not in host_block
+
+    def test_both_overlays_listed(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(
+                speaker1_overlay="X for Alex",
+                speaker2_overlay="Y for Jordan",
+            )
+        )
+        assert "- Alex: X for Alex" in prompt
+        assert "- Jordan: Y for Jordan" in prompt
+
+    def test_only_one_overlay_renders_one_bullet(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(speaker2_overlay="only Jordan")
+        )
+        assert "Episode-specific adjustments:" in prompt
+        assert "- Jordan: only Jordan" in prompt
+        assert "- Alex:" not in prompt.split("Episode-specific adjustments:")[1].split(
+            "Instructions:"
+        )[0]
+
+    def test_speaker_overlay_does_not_mutate_personality(self):
+        """generate_dialogue must NEVER write to gemini_cfg['speakerN']['personality']."""
+        cfg = {
+            **GEMINI_CFG,
+            "speaker1": {**GEMINI_CFG["speaker1"], "personality": "original P1", "style_overlay": "overlay P1"},
+            "speaker2": {**GEMINI_CFG["speaker2"], "personality": "original P2"},
+        }
+        original_p1 = cfg["speaker1"]["personality"]
+        original_p2 = cfg["speaker2"]["personality"]
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
+
+        assert cfg["speaker1"]["personality"] == original_p1
+        assert cfg["speaker2"]["personality"] == original_p2
+
+
+class TestAngleInjection:
+    """Angle text reaches the dialogue prompt regardless of research presence."""
+
+    def test_angle_in_dialogue_prompt(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(angle="the economic implications")
+        )
+        assert "Episode angle: the economic implications" in prompt
+
+    def test_angle_in_dialogue_prompt_without_research(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(
+                angle="regulatory bite",
+                research_notes="",
+            )
+        )
+        assert "Episode angle: regulatory bite" in prompt
+        assert "Complementary research" not in prompt
+
+    def test_no_angle_means_no_header(self):
+        prompt = _build_prompt(**_build_prompt_default_kwargs())
+        assert "Episode angle:" not in prompt
+
+
+@pytest.mark.parametrize(
+    "field,kwarg",
+    [
+        ("style", "style_text"),
+        ("speaker1-style", "speaker1_overlay"),
+        ("speaker2-style", "speaker2_overlay"),
+        ("angle", "angle"),
+    ],
+)
+class TestTruncationWarningPerField:
+    """600-char input is truncated to 500 with the field name in the warning."""
+
+    def test_truncation_emits_warning_named_by_field(self, caplog, field, kwarg):
+        long_text = "a" * 600
+        with caplog.at_level(logging.WARNING, logger="tts_podcast.style_presets"):
+            _build_prompt(**_build_prompt_default_kwargs(**{kwarg: long_text}))
+        matching = [rec for rec in caplog.records if field in rec.message]
+        assert matching, f"No warning mentioning field {field!r} in {caplog.records}"
+
+    def test_truncated_value_reaches_prompt(self, caplog, field, kwarg):
+        long_text = "a" * 600
+        with caplog.at_level(logging.WARNING, logger="tts_podcast.style_presets"):
+            prompt = _build_prompt(**_build_prompt_default_kwargs(**{kwarg: long_text}))
+        # 500 a's must appear; 600 a's must not.
+        assert "a" * 500 in prompt
+        assert "a" * 600 not in prompt
+
+
+class TestPromptSectionOrder:
+    """All four injection points render in the documented order."""
+
+    def test_order_when_all_options_set(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(
+                preset="academic",
+                style_text="extra dry",
+                speaker1_overlay="overlay1",
+                speaker2_overlay="overlay2",
+                angle="big picture",
+            )
+        )
+        positions = {
+            "Host personalities:": prompt.index("Host personalities:"),
+            "Episode-specific adjustments:": prompt.index("Episode-specific adjustments:"),
+            "Instructions:": prompt.index("Instructions:"),
+            "tone bullet": prompt.index("Keep the tone informative"),
+            "Stylistic guidance:": prompt.index("Stylistic guidance:"),
+            "Episode angle:": prompt.index("Episode angle:"),
+            "Articles:": prompt.index("Articles:"),
+        }
+        # Top-level order
+        assert positions["Host personalities:"] < positions["Episode-specific adjustments:"]
+        assert positions["Episode-specific adjustments:"] < positions["Instructions:"]
+        assert positions["Instructions:"] < positions["Articles:"]
+        # Inside Instructions: tone bullet → Stylistic guidance → Episode angle
+        assert positions["Instructions:"] < positions["tone bullet"]
+        assert positions["tone bullet"] < positions["Stylistic guidance:"]
+        assert positions["Stylistic guidance:"] < positions["Episode angle:"]
+        assert positions["Episode angle:"] < positions["Articles:"]
+
+    def test_no_block_header_double_emitted(self):
+        prompt = _build_prompt(
+            **_build_prompt_default_kwargs(
+                preset="academic",
+                style_text="extra dry",
+                speaker1_overlay="x",
+                speaker2_overlay="y",
+                angle="z",
+            )
+        )
+        for header in (
+            "Stylistic guidance:",
+            "Episode-specific adjustments:",
+            "Host personalities:",
+            "Instructions:",
+            "Articles:",
+        ):
+            assert prompt.count(header) == 1, f"Header {header!r} appears multiple times"
+
+
+class TestNoFlagsByteIdentical:
+    """Backward-compat snapshot guarantee: defaults produce the frozen baseline."""
+
+    def test_no_flags_byte_identical(self):
+        fixture = Path(__file__).parent / "fixtures" / "dialogue_prompt_no_overlay.txt"
+        expected = fixture.read_text(encoding="utf-8")
+        # The fixture was generated with these specific articles — replicate.
+        from tests.fixtures.regen_dialogue_prompt import _FIXTURE_ARTICLES
+        got = _build_prompt(
+            articles=_FIXTURE_ARTICLES,
+            speaker1_name="Alex",
+            speaker2_name="Jordan",
+            speaker1_personality="enthusiastic and curious",
+            speaker2_personality="analytical and thoughtful",
+            min_minutes=6.0,
+            target_minutes=8.0,
+            max_minutes=14.0,
+            words_per_minute=150,
+            language="French",
+            audio_tags=False,
+            research_notes="",
+        )
+        assert got == expected, "Backward-compat regression: default prompt drifted from fixture."
