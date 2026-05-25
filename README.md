@@ -85,6 +85,18 @@ uv run tts-podcast run -n https://blog.example.com/article
 
 # Generate the script + report but skip audio synthesis
 uv run tts-podcast run -A https://blog.example.com/article
+
+# Style & angle: nudge tone via a preset + free text, focus on one angle
+uv run tts-podcast run -R 1 \
+    --preset academic \
+    --style "extra rigorous, French academic feel" \
+    --angle "the regulatory implications" \
+    https://blog.example.com/article
+
+# Per-episode speaker overlay (TTS voice acting stays unchanged)
+uv run tts-podcast run --speaker1-style "more skeptical than usual" \
+    --speaker2-style "extra warm and forgiving" \
+    https://blog.example.com/article
 ```
 
 ### Key flags
@@ -99,6 +111,10 @@ uv run tts-podcast run -A https://blog.example.com/article
 | `-o, --output-dir DIR` | Output directory (overrides config). |
 | `--no-report` | Skip the report folder. |
 | `-v, --verbose` | Enable DEBUG logging. |
+| `--preset NAME` | Named style preset for the dialogue (`casual`, `academic`, `humorous`, `debate`, `vulgarized`, or `none` to disable a configured default). |
+| `--style TEXT` | Free-text style guidance (capped at 500 chars). Composes with `--preset`. |
+| `--speaker1-style TEXT` / `--speaker2-style TEXT` | Per-episode style overlay for the given speaker. The baseline personality (and TTS voice acting) stays unchanged. |
+| `--angle TEXT` | Episode angle. Steers the dialogue prompt and the first research round only. |
 
 Run `uv run tts-podcast run --help` for the full list.
 
