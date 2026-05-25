@@ -23,6 +23,7 @@ from google import genai
 from google.genai import types
 
 from tts_podcast.retry import gemini_retry
+from tts_podcast.style_presets import truncate_with_warning
 
 if TYPE_CHECKING:
     from rich.progress import Progress
@@ -42,7 +43,7 @@ want to know — background context, recent developments, contradicting takes, \
 technical depth the article skips, related work. Use Google Search \
 aggressively. Cite every fact you add by URL. Produce at most 800 words of \
 bullet-point notes in {language}.
-
+{angle_block}
 Articles:
 {articles}
 """
@@ -347,6 +348,8 @@ def conduct_research(
     token_tracker: TokenTracker | None = None,
     progress: Progress | None = None,
     task_id: Any = None,
+    *,
+    angle: str | None = None,
 ) -> ResearchReport:
     """
     Run *rounds* sequential research rounds using Gemini + Google Search.
@@ -372,6 +375,11 @@ def conduct_research(
         Progress instance whose task is advanced once per completed round.
     task_id : Any, optional
         Task identifier returned by ``progress.add_task()``.
+    angle : str or None, keyword-only, optional
+        Free-text episode angle to prioritise during round 1.  Round N>=2
+        inherits the angle implicitly through ``previous_notes`` and is NOT
+        re-prompted, so that gap-analysis rounds stay neutral.  Truncated to
+        500 chars.
 
     Returns
     -------
@@ -408,6 +416,15 @@ def conduct_research(
     articles_text = _format_articles(sources)
     completed_rounds: list[ResearchRound] = []
 
+    angle_resolved = truncate_with_warning(angle, "angle")
+    if angle_resolved:
+        angle_block = (
+            f"\nAngle to emphasize: {angle_resolved.strip()}. Prioritise "
+            "sources and notes that illuminate this angle.\n"
+        )
+    else:
+        angle_block = ""
+
     logger.info(
         "Conducting %d research round(s) with model '%s' on %d source(s).",
         rounds,
@@ -420,6 +437,7 @@ def conduct_research(
             prompt = _ROUND_1_PROMPT.format(
                 language=language,
                 articles=articles_text,
+                angle_block=angle_block,
             )
             query_hint = "initial complementary angles"
         else:

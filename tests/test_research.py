@@ -318,3 +318,81 @@ class TestTokenTrackerIntegration:
         summary = tracker.summary()
         assert "200" in summary  # total input
         assert "100" in summary  # total output
+
+
+# ---------------------------------------------------------------------------
+# Angle injection (round 1 only)
+# ---------------------------------------------------------------------------
+
+
+class TestAngleInjection:
+    """Angle reaches round-1 prompt only — never re-injected into round N>=2."""
+
+    def test_angle_in_round1_prompt(self):
+        mock_genai = _mock_genai([_mock_response("Notes 1")])
+        with patch("tts_podcast.research.genai", mock_genai):
+            conduct_research(
+                SAMPLE_SOURCES,
+                rounds=1,
+                gemini_cfg=GEMINI_CFG,
+                angle="the regulatory implications",
+            )
+        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
+            "contents"
+        ]
+        assert "Angle to emphasize: the regulatory implications" in prompt
+
+    def test_angle_header_NOT_re_injected_in_round_n_prompt(self):
+        """Round-N prompt MUST NOT carry the literal 'Angle to emphasize:' header."""
+        mock_genai = _mock_genai([
+            _mock_response("Round 1 baseline notes"),
+            _mock_response("Round 2 gap notes"),
+        ])
+        with patch("tts_podcast.research.genai", mock_genai):
+            conduct_research(
+                SAMPLE_SOURCES,
+                rounds=2,
+                gemini_cfg=GEMINI_CFG,
+                angle="economy",
+            )
+        calls = mock_genai.Client.return_value.models.generate_content.call_args_list
+        round_1 = calls[0].kwargs["contents"]
+        round_2 = calls[1].kwargs["contents"]
+        # Round 1 has the header; round 2 must not (the angle stays out of the
+        # gap-analysis directive; it would only survive via previous_notes).
+        assert "Angle to emphasize:" in round_1
+        assert "Angle to emphasize:" not in round_2
+
+    def test_round1_no_angle_keeps_byte_identical_prompt(self):
+        """No-angle path: prompt has no 'Angle to emphasize:' line, byte-identical to baseline."""
+        mock_genai = _mock_genai([_mock_response("notes")])
+        with patch("tts_podcast.research.genai", mock_genai):
+            conduct_research(SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG)
+        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
+            "contents"
+        ]
+        assert "Angle to emphasize:" not in prompt
+
+    def test_angle_plus_search_input(self):
+        """Search source + angle => round-1 prompt contains both the topic and the angle."""
+        search_source = Source(
+            url="search://AI%20economy",
+            title="Web search: AI economy",
+            summary="Topic to investigate via web research: AI economy",
+            full_text="Topic to investigate via web research: AI economy",
+            scraped_ok=True,
+            kind="search",
+        )
+        mock_genai = _mock_genai([_mock_response("notes")])
+        with patch("tts_podcast.research.genai", mock_genai):
+            conduct_research(
+                [search_source],
+                rounds=1,
+                gemini_cfg=GEMINI_CFG,
+                angle="regulatory impact",
+            )
+        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
+            "contents"
+        ]
+        assert "AI economy" in prompt
+        assert "Angle to emphasize: regulatory impact" in prompt
