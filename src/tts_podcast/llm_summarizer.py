@@ -79,8 +79,9 @@ _EXAMPLE_PAREN_CUES = """\
 
 _RESEARCH_SECTION_TEMPLATE = """\
 Complementary research (from Google Search grounding — use to enrich the \
-discussion, weave naturally into the dialogue, and cite sources by URL when \
-relevant facts come from these notes):
+discussion and weave naturally into the dialogue; when you credit a source \
+out loud, use only a short reference such as the domain or publication name, \
+never the full URL):
 {notes}
 
 """
@@ -108,6 +109,12 @@ exceeding this; trim depth on secondary points rather than blowing past it.
 {style_block}{angle_line}- Reflect each host's personality in their speaking style and reactions.
 {delivery_cues_guidance}
 - Use shorter sentences for excitement, longer ones for analysis.
+- Never read a full URL aloud — they sound awful in speech. When a speaker \
+needs to credit a source, use only a short spoken reference: a bare domain \
+(e.g. "example.com"), a publication name, or the article title. Strip the \
+"https://", "www.", paths, query strings, and tracking parameters. If even \
+the short form would be clunky, just describe the source ("the official \
+blog", "a recent Wired piece") instead of naming it.
 - End the dialogue with a brief conclusion that recaps the key takeaway and \
 adds a witty remark, favourite point, or thought-provoking sign-off.
 
