@@ -71,6 +71,7 @@ class TokenTracker:
         self._pricing: dict[str, dict[str, float]] = self._resolve_pricing(
             self._raw_pricing, self._service_tier,
         )
+        self._warned_missing: set[str] = set()
 
     # ------------------------------------------------------------------
     # Configuration
@@ -168,6 +169,14 @@ class TokenTracker:
             output_tokens,
             usage.calls,
         )
+        if self._raw_pricing and model not in self._pricing and model not in self._warned_missing:
+            self._warned_missing.add(model)
+            logger.warning(
+                "No pricing entry for model %r — cost contribution will be reported "
+                "as n/a. Add it under the `pricing:` block of your config "
+                "(see config.example.yaml for the expected format).",
+                model,
+            )
 
     def record_usage(self, model: str, usage_metadata: Any) -> None:
         """
@@ -248,7 +257,16 @@ class TokenTracker:
             total_output += usage.output_tokens
 
         total_cost = self.total_cost()
-        total_cost_str = f"${total_cost:.4f}" if self._pricing else "n/a"
+        unpriced = [m for m in self._usage if not self._pricing.get(m)]
+        if not self._pricing or len(unpriced) == len(self._usage):
+            total_cost_str = "n/a"
+        elif unpriced:
+            total_cost_str = (
+                f"≥${total_cost:.4f} (partial — {len(unpriced)} model(s) unpriced: "
+                f"{', '.join(unpriced)})"
+            )
+        else:
+            total_cost_str = f"${total_cost:.4f}"
         lines.append(
             f"  ─── Total: {total_input:,} in + {total_output:,} out — {total_cost_str}"
         )
@@ -266,5 +284,14 @@ class TokenTracker:
         total_input = sum(u.input_tokens for u in self._usage.values())
         total_output = sum(u.output_tokens for u in self._usage.values())
         cost = self.total_cost()
-        cost_str = f" — ${cost:.4f}" if self._pricing else ""
+        if not self._pricing:
+            cost_str = ""
+        else:
+            unpriced = [m for m in self._usage if not self._pricing.get(m)]
+            if self._usage and len(unpriced) == len(self._usage):
+                cost_str = " — cost n/a"
+            elif unpriced:
+                cost_str = f" — ≥${cost:.4f} (partial)"
+            else:
+                cost_str = f" — ${cost:.4f}"
         return f"tokens: {total_input:,} in / {total_output:,} out{cost_str}"
