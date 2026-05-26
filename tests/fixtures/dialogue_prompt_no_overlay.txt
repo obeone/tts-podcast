@@ -16,6 +16,7 @@ Instructions:
 - EVERY speaker turn MUST start with an inline emotional cue in parentheses (e.g., "(avec enthousiasme) Incroyable !"). This sets the delivery tone for the turn.
 - You may also add additional parenthetical cues mid-turn to guide delivery (e.g., "(sceptique)", "(posément)", "(en pesant ses mots)", "(après une courte pause)"). Vary them naturally according to the content and pace of the discussion.
 - Use shorter sentences for excitement, longer ones for analysis.
+- Never read a full URL aloud — they sound awful in speech. When a speaker needs to credit a source, use only a short spoken reference: a bare domain (e.g. "example.com"), a publication name, or the article title. Strip the "https://", "www.", paths, query strings, and tracking parameters. If even the short form would be clunky, just describe the source ("the official blog", "a recent Wired piece") instead of naming it.
 - End the dialogue with a brief conclusion that recaps the key takeaway and adds a witty remark, favourite point, or thought-provoking sign-off.
 
 STRICT OUTPUT FORMAT:
