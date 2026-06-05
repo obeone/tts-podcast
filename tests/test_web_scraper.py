@@ -143,6 +143,78 @@ class TestScrapeUrl:
 
 
 # ---------------------------------------------------------------------------
+# CloakBrowser fallback tests
+# ---------------------------------------------------------------------------
+
+
+class TestCloakFallback:
+    """Behaviour of the optional CloakBrowser stealth fallback in scrape_url()."""
+
+    def test_fallback_recovers_content_when_trafilatura_fails(self) -> None:
+        """When trafilatura yields nothing, the cloak HTML is extracted instead."""
+        with (
+            patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=None),
+            patch("tts_podcast.web_scraper.cloak_fetcher.fetch_html", return_value="<cloak-html>") as mock_cloak,
+            patch("tts_podcast.web_scraper.trafilatura.extract", return_value="Recovered body"),
+            patch("tts_podcast.web_scraper.trafilatura.extract_metadata", return_value=None),
+        ):
+            src = scrape_url("https://example.com/blocked", use_cloak_fallback=True)
+
+        assert src.scraped_ok is True
+        assert src.full_text == "Recovered body"
+        mock_cloak.assert_called_once()
+        _, kwargs = mock_cloak.call_args
+        assert kwargs.get("user_agent") == _BROWSER_USER_AGENT
+
+    def test_fallback_not_invoked_when_disabled(self) -> None:
+        """With use_cloak_fallback=False the stealth browser is never called."""
+        with (
+            patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=None),
+            patch("tts_podcast.web_scraper.cloak_fetcher.fetch_html") as mock_cloak,
+        ):
+            src = scrape_url("https://example.com/blocked", use_cloak_fallback=False)
+
+        assert src.scraped_ok is False
+        mock_cloak.assert_not_called()
+
+    def test_fallback_not_invoked_when_trafilatura_succeeds(self) -> None:
+        """A successful trafilatura scrape skips the cloak fallback entirely."""
+        with (
+            patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value="<html>"),
+            patch("tts_podcast.web_scraper.trafilatura.extract", return_value="Body"),
+            patch("tts_podcast.web_scraper.trafilatura.extract_metadata", return_value=None),
+            patch("tts_podcast.web_scraper.cloak_fetcher.fetch_html") as mock_cloak,
+        ):
+            src = scrape_url("https://example.com/ok", use_cloak_fallback=True)
+
+        assert src.scraped_ok is True
+        mock_cloak.assert_not_called()
+
+    def test_returns_failed_source_when_cloak_unavailable(self) -> None:
+        """When cloak returns None (e.g. not installed), the failed source stands."""
+        with (
+            patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=None),
+            patch("tts_podcast.web_scraper.cloak_fetcher.fetch_html", return_value=None),
+        ):
+            src = scrape_url("https://example.com/blocked", use_cloak_fallback=True)
+
+        assert src.scraped_ok is False
+        assert src.full_text == ""
+
+    def test_keeps_failed_source_when_cloak_html_extracts_nothing(self) -> None:
+        """If cloak returns HTML but extraction is still empty, source stays failed."""
+        with (
+            patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=None),
+            patch("tts_podcast.web_scraper.cloak_fetcher.fetch_html", return_value="<cloak-html>"),
+            patch("tts_podcast.web_scraper.trafilatura.extract", return_value=None),
+            patch("tts_podcast.web_scraper.trafilatura.extract_metadata", return_value=None),
+        ):
+            src = scrape_url("https://example.com/blocked", use_cloak_fallback=True)
+
+        assert src.scraped_ok is False
+
+
+# ---------------------------------------------------------------------------
 # scrape_urls tests
 # ---------------------------------------------------------------------------
 
@@ -176,4 +248,17 @@ class TestScrapeUrls:
         ) as mock_scrape:
             scrape_urls(urls, user_agent="custom/7")
 
-        mock_scrape.assert_called_once_with("https://a.com", 10, "custom/7")
+        mock_scrape.assert_called_once_with(
+            "https://a.com", 10, "custom/7", use_cloak_fallback=False
+        )
+
+    def test_forwards_cloak_fallback_flag_to_scrape_url(self) -> None:
+        """scrape_urls forwards use_cloak_fallback to each per-URL call."""
+        with patch(
+            "tts_podcast.web_scraper.scrape_url",
+            return_value=SimpleNamespace(url="https://a.com", scraped_ok=True),
+        ) as mock_scrape:
+            scrape_urls(["https://a.com"], use_cloak_fallback=True)
+
+        _, kwargs = mock_scrape.call_args
+        assert kwargs["use_cloak_fallback"] is True
