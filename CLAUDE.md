@@ -67,6 +67,7 @@ URLs ── web_scraper.scrape_urls ──► list[Source]
 - **Service tiers** (`gemini.service_tier`): when set, passed as `x-goog-api-service-tier` HTTP header on text/research calls. **TTS calls never use a service tier** (Gemini TTS does not support it). Pricing supports both flat and tier-aware formats; `TokenTracker._resolve_pricing` picks the right rate.
 - **Retry policy**: `retry.gemini_retry` only retries `google.genai.errors.ServerError` (5xx) — exponential back-off, 5 attempts, 2 s → 60 s. Client errors (4xx) are not retried.
 - **Scrape failures don't abort**: `scrape_urls` returns `Source(scraped_ok=False)` for failures; the run continues with whatever scraped successfully, and aborts only if **all** URLs failed.
+- **Optional CloakBrowser fallback**: when `scraping.cloak_fallback: true`, a trafilatura scrape that yields no content (download `None` or empty extraction — the typical access-error signature: 403/429, Cloudflare, JS-only pages) is retried through `cloak_fetcher.fetch_html`, which drives the optional `cloakbrowser` stealth Chromium and feeds its rendered HTML back into the **same** `_extract_from_html` path. The dependency is an optional extra (`uv sync --extra cloak`); `cloak_fetcher` degrades to `None`/no-op when the package is absent or errors, so the flag is safe to leave on without it installed. Default is off. The fallback is never reached on a successful trafilatura scrape.
 - **Output stem**: `_build_output_stem` = `<host>-<6-char-sha1-of-urls>-<ISO-date>`, stable for a given URL set within a day.
 - **Token tracking is opt-in per call site**: every Gemini call must thread `token_tracker` through and call `tracker.record_usage(model, response.usage_metadata)`. Missing wire-ups silently undercount cost.
 - **Style & angle injection points**: `--preset` / `--style` / `--angle` / `--speaker[12]-style` write into `gemini.style.*` and `gemini.speaker[12].style_overlay` (never into `personality`). `llm_summarizer._build_prompt` renders them inside the dialogue prompt: per-speaker overlays in a dedicated `Episode-specific adjustments:` block between `Host personalities:` and `Instructions:`; preset + free style as a `Stylistic guidance:` sub-section inside `Instructions:`; angle as an `- Episode angle:` bullet. The angle is also injected into `research._ROUND_1_PROMPT` (and nowhere else — round N≥2 only sees it indirectly via `previous_notes`, so gap-analysis stays neutral).
@@ -86,7 +87,8 @@ CLI flags override config: `-R/--research`, `-d/--duration`, `-o/--output-dir`. 
 | `cli.py` | Click entry point, pipeline orchestration, `config init/show` wizard |
 | `config.py` | YAML loader + `_env` resolution |
 | `models.py` | `Source` dataclass with `kind` field (`"url"` / `"file"` / `"search"`) |
-| `web_scraper.py` | trafilatura-based scraping, parallel (≤10 workers) |
+| `web_scraper.py` | trafilatura-based scraping, parallel (≤10 workers), optional CloakBrowser fallback |
+| `cloak_fetcher.py` | Optional `cloakbrowser` stealth-Chromium fetch (graceful no-op when absent) |
 | `local_loader.py` | Local file reader (txt, md, html via trafilatura, pdf via pypdf) |
 | `research.py` | Iterative Gemini + Google Search grounding rounds |
 | `llm_summarizer.py` | Dialogue generation + byte-bounded chunking |
