@@ -465,6 +465,7 @@ def run(
     pricing_cfg: dict = cfg.get("pricing", {})
 
     scrape_timeout: int = scraping_cfg.get("timeout_seconds", 10)
+    cloak_fallback: bool = bool(scraping_cfg.get("cloak_fallback", False))
 
     output_dir: str = (
         output_dir_override
@@ -569,6 +570,7 @@ def run(
                 user_agent=web_user_agent,
                 progress=progress,
                 task_id=scrape_task,
+                use_cloak_fallback=cloak_fallback,
             )
 
         file_sources: list[Source] = []
@@ -776,6 +778,11 @@ def config_init(output_path: str) -> None:
         "HTTP timeout (seconds)",
         _get("web", "timeout_seconds", "15"),
     )
+    cloak_fallback = click.confirm(
+        "Enable CloakBrowser stealth fallback for blocked pages? "
+        "(optional; needs `uv sync --extra cloak`)",
+        default=str(existing.get("scraping", {}).get("cloak_fallback", False)).lower() == "true",
+    )
 
     click.echo("\n── Gemini ────────────────────────────────────────────────────")
     gemini_key_env  = _prompt(
@@ -863,7 +870,10 @@ def config_init(output_path: str) -> None:
         "research": {
             "rounds_default": int(research_rounds_default),
         },
-        "scraping": existing.get("scraping", {"timeout_seconds": 10}),
+        "scraping": {
+            "timeout_seconds": int(existing.get("scraping", {}).get("timeout_seconds", 10)),
+            "cloak_fallback": cloak_fallback,
+        },
         "output": {
             "dir": output_dir,
             "format": output_fmt,
