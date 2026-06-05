@@ -1,6 +1,6 @@
 [project]
 name = "tts-podcast"
-version = "0.1.0"
+version = "0.2.0"
 description = "Turn any web article into a two-voice podcast via Gemini TTS, with iterative Google Search enrichment."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -20,6 +20,14 @@ dependencies = [
     "rich>=15.0",
     "tenacity>=9.1",
     "trafilatura>=2.0.0",
+]
+
+[project.optional-dependencies]
+# Stealth-browser fallback for pages that block plain HTTP scraping
+# (Cloudflare, reCAPTCHA, etc.).  Pulls in a ~200 MB Chromium binary on first
+# run.  Enable at runtime with `scraping.cloak_fallback: true`.
+cloak = [
+    "cloakbrowser>=0.3.31",
 ]
 
 [dependency-groups]
