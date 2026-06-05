@@ -80,6 +80,14 @@ research:
 scraping:
   # HTTP request timeout in seconds for article fetches
   timeout_seconds: 10
+  # Optional stealth-browser fallback for pages that block plain HTTP scraping
+  # (403/429, Cloudflare, JS-only pages).  When true and trafilatura extracts
+  # nothing, the URL is retried through CloakBrowser, a modified Chromium that
+  # evades bot detection.  Requires the optional dependency:
+  #   uv sync --extra cloak        (pulls a ~200 MB Chromium binary on first run)
+  # When the package is absent, this flag is a no-op and scraping behaves as
+  # before.  Defaults to false.
+  cloak_fallback: false
 
 output:
   # Directory where the generated podcast file will be saved.
