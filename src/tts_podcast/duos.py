@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 #: The duo selected when neither ``--duo`` nor ``gemini.default_duo`` is set
 #: and no legacy ``gemini.speaker1`` / ``speaker2`` block is present.
-DEFAULT_DUO = "warm"
+DEFAULT_DUO = "contrast"
 
 
 #: Built-in duos, available out of the box without any configuration.  A user
