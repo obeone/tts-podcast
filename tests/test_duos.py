@@ -36,11 +36,11 @@ from tts_podcast.research import ResearchReport
 
 
 class TestResolveDuo:
-    def test_builtin_default_resolves_to_warm_pairing(self):
+    def test_builtin_default_resolves_to_contrast_pairing(self):
         resolved = resolve_duo(DEFAULT_DUO)
         assert resolved is not None
-        assert resolved["speaker1"]["voice"] == "Sulafat"
-        assert resolved["speaker2"]["voice"] == "Achird"
+        assert resolved["speaker1"]["voice"] == "Puck"
+        assert resolved["speaker2"]["voice"] == "Kore"
 
     @pytest.mark.parametrize("name", [None, "", "   "])
     def test_blank_name_returns_none(self, name):
@@ -204,12 +204,12 @@ def runner_env(monkeypatch):
 
 class TestDuoCliPrecedence:
     def test_builtin_default_when_no_speakers_no_duo(self, runner_env, tmp_path):
-        # Neither default_duo nor legacy speakers → built-in 'warm'.
+        # Neither default_duo nor legacy speakers → built-in 'contrast'.
         config_path = _config(tmp_path, "# no voices configured\n")
         result, cap = _run_capture_speakers(runner_env, config_path, [])
         assert result.exit_code == 0, result.output
-        assert (cap["s1_voice"], cap["s2_voice"]) == ("Sulafat", "Achird")
-        assert (cap["s1_name"], cap["s2_name"]) == ("Alex", "Jordan")
+        assert (cap["s1_voice"], cap["s2_voice"]) == ("Puck", "Kore")
+        assert (cap["s1_name"], cap["s2_name"]) == ("Theo", "Nadia")
 
     def test_legacy_speakers_preserved_when_no_duo(self, runner_env, tmp_path):
         # Backward compat: a config with only speaker1/speaker2 is untouched.

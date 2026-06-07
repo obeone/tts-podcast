@@ -31,7 +31,7 @@ gemini:
   #   journalist  Zephyr (Bright)    · Algieba (Smooth)      — fast-paced tech journalism
   #   debate      Laomedeia (Upbeat) · Algenib (Gravelly)    — opposing viewpoints (pair with --preset debate)
   # List them anytime with `tts-podcast duos`. Override per run with `--duo NAME`.
-  default_duo: warm
+  default_duo: contrast
 
   # Define your own duos (merged over the built-ins; same slug overrides one).
   # Pick from the 30 prebuilt Gemini voices — see
