@@ -22,9 +22,10 @@ Gemini, and synthesises an MP3 (or WAV) using Gemini's multi-speaker TTS.
   unanswered questions.
 - **Multi-voice TTS** — two distinct Gemini voices with configurable
   personalities, scene, and delivery cues.
-- **Named voice duos** — five built-in pairings (`warm`, `contrast`,
-  `explorer`, `journalist`, `debate`) selectable per run with `--duo`, or
-  define your own; pick from all 30 prebuilt Gemini voices.
+- **Named voice duos** — five built-in pairings (`contrast` by default,
+  plus `warm`, `explorer`, `journalist`, `debate`) selectable per run with
+  `--duo`, or define your own; pick from all 30 prebuilt Gemini voices.
+  See [Voice duos](#voice-duos).
 - **Report folder** — generates `overview.md`, `sources.md`, `script.md`,
   `research.md`, and `summary.md` alongside the audio file.
 - **Token & cost tracking** — accumulates token usage per model and
@@ -125,6 +126,75 @@ uv run tts-podcast run --duo debate --preset debate https://blog.example.com/art
 | `--angle TEXT` | Episode angle. Steers the dialogue prompt and the first research round only. |
 
 Run `uv run tts-podcast run --help` for the full list.
+
+## Voice duos
+
+A *duo* bundles both speakers — name, prebuilt Gemini voice, and baseline
+personality — under a single slug, so you switch the whole pairing at once
+instead of editing `speaker1` / `speaker2` by hand. List them anytime:
+
+```bash
+uv run tts-podcast duos
+```
+
+### Built-in duos
+
+| Slug | Speaker 1 | Speaker 2 | Vibe |
+|---|---|---|---|
+| `contrast` *(default)* | Puck (Upbeat) | Kore (Firm) | High timbre contrast — Google's own multi-speaker pairing |
+| `warm` | Sulafat (Warm) | Achird (Friendly) | Accessible, mainstream feel |
+| `explorer` | Fenrir (Excitable) | Sadaltager (Knowledgeable) | Excited explorer + calm expert; vulgarisation-friendly |
+| `journalist` | Zephyr (Bright) | Algieba (Smooth) | Fast-paced tech-journalism feel |
+| `debate` | Laomedeia (Upbeat) | Algenib (Gravelly) | Opposing viewpoints — techno-optimist vs skeptic (pair with `--preset debate`) |
+
+> Gemini doesn't officially document voice gender; the pairings are curated
+> from each voice's [official descriptor][voices] plus community reports.
+> Audition voices in [Google AI Studio][voices] before committing.
+
+[voices]: https://ai.google.dev/gemini-api/docs/speech-generation
+
+### Selecting a duo
+
+```bash
+# Pick a duo for one run (overrides config)
+uv run tts-podcast run --duo journalist https://blog.example.com/article
+
+# Opposing viewpoints, structured as a debate
+uv run tts-podcast run --duo debate --preset debate https://blog.example.com/article
+```
+
+Set a persistent default in `config.yaml`:
+
+```yaml
+gemini:
+  default_duo: contrast
+```
+
+### Custom duos
+
+Define your own under `gemini.duos`; they're merged over the built-ins
+(same slug overrides one, a new slug adds one). Match each voice's
+descriptor to the personality for the best result:
+
+```yaml
+gemini:
+  default_duo: my_duo
+  duos:
+    my_duo:
+      description: "my custom pairing"
+      speaker1:
+        name: Robin
+        voice: Laomedeia   # Upbeat
+        personality: "techno-optimist; champions the upside"
+      speaker2:
+        name: Sasha
+        voice: Algenib     # Gravelly
+        personality: "hard-nosed skeptic; probes risks and costs"
+```
+
+**Resolution precedence:** `--duo` > `gemini.default_duo` >
+legacy `gemini.speaker1` / `speaker2` blocks > built-in `contrast`. A config
+that defines only the legacy `speakerN` blocks keeps working unchanged.
 
 ## Output layout
 
