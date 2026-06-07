@@ -23,21 +23,49 @@ gemini:
   # service_tier: flex
   # Language for the generated podcast dialogue and TTS preamble
   language: French
-  speaker1:
-    name: Alex
-    voice: Puck
-    personality: "enthusiastic, curious, quick to get excited about tech innovations"
-    # Optional per-episode overlay applied to the dialogue prompt only — the TTS
-    # voice acting keeps reading the baseline `personality` above unchanged.
-    # CLI flag --speaker1-style overrides this for one run.
-    # style_overlay: ""
-  speaker2:
-    name: Jordan
-    voice: Charon
-    personality: "analytical, mildly skeptical, adds nuance and historical context"
-    # Optional per-episode overlay (same semantics as speaker1.style_overlay).
-    # CLI flag --speaker2-style overrides this for one run.
-    # style_overlay: ""
+  # ── Voices ──────────────────────────────────────────────────────
+  # Speakers are chosen via a named "duo". Five duos ship built-in:
+  #   warm        Sulafat (Warm)     · Achird (Friendly)     — accessible, mainstream
+  #   contrast    Puck (Upbeat)      · Kore (Firm)           — high timbre contrast (Google's pairing)
+  #   explorer    Fenrir (Excitable) · Sadaltager (Knowing)  — vulgarisation-friendly
+  #   journalist  Zephyr (Bright)    · Algieba (Smooth)      — fast-paced tech journalism
+  #   debate      Laomedeia (Upbeat) · Algenib (Gravelly)    — opposing viewpoints (pair with --preset debate)
+  # List them anytime with `tts-podcast duos`. Override per run with `--duo NAME`.
+  default_duo: warm
+
+  # Define your own duos (merged over the built-ins; same slug overrides one).
+  # Pick from the 30 prebuilt Gemini voices — see
+  # https://ai.google.dev/gemini-api/docs/speech-generation for previews; match
+  # each voice's one-word descriptor to the personality for the best result.
+  # duos:
+  #   my_duo:
+  #     description: "my custom pairing"
+  #     speaker1:
+  #       name: Robin
+  #       voice: Laomedeia  # Upbeat
+  #       personality: "techno-optimist; champions the upside and what becomes newly possible"
+  #     speaker2:
+  #       name: Sasha
+  #       voice: Algenib  # Gravelly
+  #       personality: "hard-nosed skeptic; probes risks, costs and failure modes"
+
+  # Legacy explicit speakers (still supported). When present AND no default_duo /
+  # --duo is set, these are used as-is — so old configs keep working untouched.
+  # speaker1:
+  #   name: Alex
+  #   voice: Sulafat  # Warm
+  #   personality: "warm, welcoming, makes complex tech feel human and inviting"
+  #   # Optional per-episode overlay applied to the dialogue prompt only — the TTS
+  #   # voice acting keeps reading the baseline `personality` above unchanged.
+  #   # CLI flag --speaker1-style overrides this for one run.
+  #   # style_overlay: ""
+  # speaker2:
+  #   name: Jordan
+  #   voice: Achird  # Friendly
+  #   personality: "friendly, witty, asks the questions the listener is thinking"
+  #   # Optional per-episode overlay (same semantics as speaker1.style_overlay).
+  #   # CLI flag --speaker2-style overrides this for one run.
+  #   # style_overlay: ""
   dialogue:
     # Target episode duration in minutes.  CLI -d/--duration overrides.
     target_duration_minutes: 8
