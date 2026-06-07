@@ -22,6 +22,9 @@ Gemini, and synthesises an MP3 (or WAV) using Gemini's multi-speaker TTS.
   unanswered questions.
 - **Multi-voice TTS** — two distinct Gemini voices with configurable
   personalities, scene, and delivery cues.
+- **Named voice duos** — five built-in pairings (`warm`, `contrast`,
+  `explorer`, `journalist`, `debate`) selectable per run with `--duo`, or
+  define your own; pick from all 30 prebuilt Gemini voices.
 - **Report folder** — generates `overview.md`, `sources.md`, `script.md`,
   `research.md`, and `summary.md` alongside the audio file.
 - **Token & cost tracking** — accumulates token usage per model and
@@ -97,6 +100,10 @@ uv run tts-podcast run -R 1 \
 uv run tts-podcast run --speaker1-style "more skeptical than usual" \
     --speaker2-style "extra warm and forgiving" \
     https://blog.example.com/article
+
+# List the available voice duos, then run one (debate pairs well with --preset debate)
+uv run tts-podcast duos
+uv run tts-podcast run --duo debate --preset debate https://blog.example.com/article
 ```
 
 ### Key flags
@@ -106,6 +113,7 @@ uv run tts-podcast run --speaker1-style "more skeptical than usual" \
 | `-f, --file FILE` | Local document to include (repeatable). Supports `.txt`, `.md`, `.html`, `.pdf`. |
 | `-s, --search QUERY` | Web-search query to seed the podcast (repeatable). Research auto-bumped to 1 if search-only. |
 | `-R, --research N` | Number of Google-Search-grounded research rounds (default 0). |
+| `--duo NAME` | Named voice duo for both speakers (`warm`, `contrast`, `explorer`, `journalist`, `debate`). Overrides `gemini.default_duo` and legacy `speakerN` blocks. See `tts-podcast duos`. |
 | `-n, --dry-run` | Print dialogue to stdout, no TTS. |
 | `-A, --no-audio` | Generate script + report only. |
 | `-o, --output-dir DIR` | Output directory (overrides config). |
