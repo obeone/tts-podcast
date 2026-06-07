@@ -396,3 +396,83 @@ class TestAngleInjection:
         ]
         assert "AI economy" in prompt
         assert "Angle to emphasize: regulatory impact" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Search-only round-1 prompt selection
+# ---------------------------------------------------------------------------
+
+
+SEARCH_SOURCE = Source(
+    url="search://quantum%20computing",
+    title="Web search: quantum computing",
+    summary="Topic to investigate via web research: quantum computing",
+    full_text="Topic to investigate via web research: quantum computing",
+    scraped_ok=True,
+    kind="search",
+)
+
+
+class TestSearchOnlyRound1Prompt:
+    """Round-1 prompt selection: search-only vs article-centric."""
+
+    def test_all_search_sources_use_search_prompt(self):
+        """When every source is kind=='search', _ROUND_1_SEARCH_PROMPT must be used."""
+        mock_genai = _mock_genai([_mock_response("notes")])
+        with patch("tts_podcast.research.genai", mock_genai):
+            conduct_research([SEARCH_SOURCE], rounds=1, gemini_cfg=GEMINI_CFG)
+
+        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
+            "contents"
+        ]
+        # Distinctive markers of _ROUND_1_SEARCH_PROMPT
+        assert "SUBSTANTIVE, COMPREHENSIVE" in prompt
+        assert "Topic:" in prompt
+        # Must NOT look like the article-centric prompt
+        assert "complementary angles" not in prompt
+
+    def test_url_sources_use_article_prompt(self):
+        """When sources are kind=='url' (default), _ROUND_1_PROMPT must be used."""
+        mock_genai = _mock_genai([_mock_response("notes")])
+        with patch("tts_podcast.research.genai", mock_genai):
+            conduct_research(SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG)
+
+        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
+            "contents"
+        ]
+        # Distinctive markers of _ROUND_1_PROMPT
+        assert "complementary angles" in prompt
+        assert "Articles:" in prompt
+        # Must NOT look like the search-only prompt
+        assert "SUBSTANTIVE, COMPREHENSIVE" not in prompt
+
+    def test_mixed_sources_use_article_prompt(self):
+        """A mix of search + url sources must fall back to _ROUND_1_PROMPT."""
+        url_source = SAMPLE_SOURCES[0]
+        mixed = [SEARCH_SOURCE, url_source]
+        mock_genai = _mock_genai([_mock_response("notes")])
+        with patch("tts_podcast.research.genai", mock_genai):
+            conduct_research(mixed, rounds=1, gemini_cfg=GEMINI_CFG)
+
+        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
+            "contents"
+        ]
+        assert "complementary angles" in prompt
+        assert "SUBSTANTIVE, COMPREHENSIVE" not in prompt
+
+    def test_search_prompt_round_n_unchanged(self):
+        """Round N>=2 must still use _ROUND_N_PROMPT regardless of source kind."""
+        mock_genai = _mock_genai([
+            _mock_response("round 1 notes"),
+            _mock_response("round 2 notes"),
+        ])
+        with patch("tts_podcast.research.genai", mock_genai):
+            conduct_research([SEARCH_SOURCE], rounds=2, gemini_cfg=GEMINI_CFG)
+
+        calls = mock_genai.Client.return_value.models.generate_content.call_args_list
+        round_2_prompt = calls[1].kwargs["contents"]
+
+        # Round 2 must use _ROUND_N_PROMPT (gap-analysis)
+        assert "Previous research notes" in round_2_prompt
+        assert "gaps" in round_2_prompt.lower()
+        assert "SUBSTANTIVE, COMPREHENSIVE" not in round_2_prompt
