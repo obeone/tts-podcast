@@ -38,6 +38,7 @@ from rich.syntax import Syntax
 
 from tts_podcast.audio_exporter import export_audio
 from tts_podcast.config import ConfigError, load_config
+from tts_podcast.duos import BUILTIN_DUOS, DEFAULT_DUO, describe_duos, resolve_duo
 from tts_podcast.link_extractor import extract_links
 from tts_podcast.llm_summarizer import generate_dialogue
 from tts_podcast.local_loader import load_local_files
@@ -63,9 +64,40 @@ def _xdg_config_home() -> Path:
 
 _DEFAULT_CONFIG = _xdg_config_home() / "tts-podcast" / "config.yaml"
 
+# The 30 prebuilt Gemini TTS voices, with their official one-word descriptor.
+# See https://ai.google.dev/gemini-api/docs/speech-generation for previews.
+# Google does not document gender; audition in AI Studio before committing.
 _GEMINI_VOICES = [
-    "Puck", "Charon", "Kore", "Fenrir", "Aoede",
-    "Leda", "Orus", "Zephyr",
+    "Zephyr",       # Bright
+    "Puck",         # Upbeat
+    "Charon",       # Informative
+    "Kore",         # Firm
+    "Fenrir",       # Excitable
+    "Leda",         # Youthful
+    "Orus",         # Firm
+    "Aoede",        # Breezy
+    "Callirrhoe",   # Easy-going
+    "Autonoe",      # Bright
+    "Enceladus",    # Breathy
+    "Iapetus",      # Clear
+    "Umbriel",      # Easy-going
+    "Algieba",      # Smooth
+    "Despina",      # Smooth
+    "Erinome",      # Clear
+    "Algenib",      # Gravelly
+    "Rasalgethi",   # Informative
+    "Laomedeia",    # Upbeat
+    "Achernar",     # Soft
+    "Alnilam",      # Firm
+    "Schedar",      # Even
+    "Gacrux",       # Mature
+    "Pulcherrima",  # Forward
+    "Achird",       # Friendly
+    "Zubenelgenubi",# Casual
+    "Vindemiatrix", # Gentle
+    "Sadachbia",    # Lively
+    "Sadaltager",   # Knowledgeable
+    "Sulafat",      # Warm
 ]
 
 
@@ -348,6 +380,16 @@ def cli() -> None:
     help="Generate a report folder (sources, script, research, links, overview) alongside the podcast.",
 )
 @click.option(
+    "--duo",
+    "duo",
+    default=None,
+    help=(
+        "Named voice duo to use for both speakers (e.g. warm, contrast, "
+        "explorer, journalist, debate). Overrides gemini.default_duo and any "
+        "legacy gemini.speakerN blocks. Run `tts-podcast duos` to list them."
+    ),
+)
+@click.option(
     "--preset",
     "preset",
     type=click.Choice([*STYLE_PRESETS.keys(), "none"], case_sensitive=False),
@@ -409,6 +451,7 @@ def run(
     no_progress: bool,
     verbose: bool,
     report: bool,
+    duo: str | None,
     preset: str | None,
     style_text: str | None,
     speaker1_style: str | None,
@@ -463,6 +506,30 @@ def run(
     output_cfg = cfg.get("output", {})
     research_cfg = cfg.get("research", {}) or {}
     pricing_cfg: dict = cfg.get("pricing", {})
+
+    # Resolve the active voice duo before reading any speaker field.
+    # Precedence: CLI --duo > gemini.default_duo > legacy gemini.speakerN
+    # blocks > built-in default. A resolved duo populates
+    # gemini_cfg["speaker1"/"speaker2"], so every downstream consumer (TTS
+    # preamble, dialogue prompt, --speakerN-style overlays) is unchanged and
+    # configs that only define legacy speaker1/speaker2 keep working as-is.
+    config_duos = gemini_cfg.get("duos")
+    has_legacy_speakers = bool(gemini_cfg.get("speaker1")) and bool(gemini_cfg.get("speaker2"))
+    duo_name = duo or gemini_cfg.get("default_duo")
+    if duo_name is None and not has_legacy_speakers:
+        duo_name = DEFAULT_DUO
+    try:
+        resolved_duo = resolve_duo(duo_name, config_duos)
+    except click.BadParameter as exc:
+        click.echo(f"[ERROR] {exc.format_message()}", err=True)
+        sys.exit(1)
+    if resolved_duo is not None:
+        gemini_cfg = {
+            **gemini_cfg,
+            "speaker1": resolved_duo["speaker1"],
+            "speaker2": resolved_duo["speaker2"],
+        }
+        logger.info("Using voice duo %r", duo_name)
 
     scrape_timeout: int = scraping_cfg.get("timeout_seconds", 10)
     cloak_fallback: bool = bool(scraping_cfg.get("cloak_fallback", False))
@@ -723,6 +790,37 @@ def run(
 
 
 # ---------------------------------------------------------------------------
+# `duos` command
+# ---------------------------------------------------------------------------
+
+@cli.command("duos")
+def duos_cmd() -> None:
+    """List the available voice duos (built-in + config-defined)."""
+    raw = _load_raw_config()
+    gemini_raw = raw.get("gemini", {}) if isinstance(raw.get("gemini"), dict) else {}
+    config_duos = gemini_raw.get("duos")
+    effective_default = gemini_raw.get("default_duo") or DEFAULT_DUO
+
+    try:
+        rows = describe_duos(config_duos)
+    except click.BadParameter as exc:
+        click.echo(f"[ERROR] {exc.format_message()}", err=True)
+        sys.exit(1)
+
+    click.echo("Available voice duos:\n")
+    for slug, desc, sp1, sp2 in rows:
+        marker = " [default]" if slug == effective_default else ""
+        click.echo(f"  {click.style(slug, bold=True)}{marker}")
+        click.echo(f"      {sp1}  ·  {sp2}")
+        if desc:
+            click.echo(f"      {desc}")
+        click.echo()
+    click.echo(
+        "Select one with `--duo NAME` on `run`, or set gemini.default_duo in your config."
+    )
+
+
+# ---------------------------------------------------------------------------
 # `config` subgroup
 # ---------------------------------------------------------------------------
 
@@ -797,23 +895,58 @@ def config_init(output_path: str) -> None:
         _get("gemini", "service_tier", ""),
     )
 
-    click.echo("\n── Speaker 1 ─────────────────────────────────────────────────")
-    sp1 = existing.get("gemini", {}).get("speaker1", {}) if isinstance(existing.get("gemini", {}).get("speaker1"), dict) else {}
-    sp1_name  = _prompt("Name",        sp1.get("name", "Alex"))
-    sp1_voice = _prompt(f"Voice ({', '.join(_GEMINI_VOICES)})", sp1.get("voice", "Puck"))
-    sp1_personality = _prompt(
-        "Personality",
-        sp1.get("personality", "enthusiastic, curious, quick to get excited about tech innovations"),
-    )
+    click.echo("\n── Voices ────────────────────────────────────────────────────")
+    click.echo(f"Built-in duos: {', '.join(BUILTIN_DUOS)}")
+    click.echo("Pick one, or leave blank to configure the two speakers manually.")
+    default_duo_choice = _prompt(
+        "Default duo (blank = manual speakers)",
+        str(existing.get("gemini", {}).get("default_duo", "") or ""),
+        show_default=True,
+    ).strip()
 
-    click.echo("\n── Speaker 2 ─────────────────────────────────────────────────")
-    sp2 = existing.get("gemini", {}).get("speaker2", {}) if isinstance(existing.get("gemini", {}).get("speaker2"), dict) else {}
-    sp2_name  = _prompt("Name",        sp2.get("name", "Jordan"))
-    sp2_voice = _prompt(f"Voice ({', '.join(_GEMINI_VOICES)})", sp2.get("voice", "Charon"))
-    sp2_personality = _prompt(
-        "Personality",
-        sp2.get("personality", "analytical, mildly skeptical, adds nuance and historical context"),
-    )
+    speaker_blocks: dict = {}
+    if default_duo_choice:
+        try:
+            resolve_duo(default_duo_choice)
+        except click.BadParameter as exc:
+            click.echo(f"[ERROR] {exc.format_message()}", err=True)
+            sys.exit(1)
+    else:
+        click.echo("\n── Speaker 1 ─────────────────────────────────────────────────")
+        sp1 = existing.get("gemini", {}).get("speaker1", {}) if isinstance(existing.get("gemini", {}).get("speaker1"), dict) else {}
+        sp1_name  = _prompt("Name",        sp1.get("name", "Alex"))
+        sp1_voice = _prompt(
+            f"Voice (one of {len(_GEMINI_VOICES)}: {', '.join(_GEMINI_VOICES)})",
+            sp1.get("voice", "Sulafat"),
+        )
+        sp1_personality = _prompt(
+            "Personality",
+            sp1.get("personality", "warm, welcoming, makes complex tech feel human and inviting"),
+        )
+
+        click.echo("\n── Speaker 2 ─────────────────────────────────────────────────")
+        sp2 = existing.get("gemini", {}).get("speaker2", {}) if isinstance(existing.get("gemini", {}).get("speaker2"), dict) else {}
+        sp2_name  = _prompt("Name",        sp2.get("name", "Jordan"))
+        sp2_voice = _prompt(
+            f"Voice (one of {len(_GEMINI_VOICES)}: {', '.join(_GEMINI_VOICES)})",
+            sp2.get("voice", "Achird"),
+        )
+        sp2_personality = _prompt(
+            "Personality",
+            sp2.get("personality", "friendly, witty, asks the questions the listener is thinking"),
+        )
+        speaker_blocks = {
+            "speaker1": {
+                "name": sp1_name,
+                "voice": sp1_voice,
+                "personality": sp1_personality,
+            },
+            "speaker2": {
+                "name": sp2_name,
+                "voice": sp2_voice,
+                "personality": sp2_personality,
+            },
+        }
 
     click.echo("\n── Style & angle (optional) ────────────────────────────────")
     style_existing = existing.get("gemini", {}).get("style", {}) if isinstance(existing.get("gemini", {}).get("style"), dict) else {}
@@ -869,16 +1002,6 @@ def config_init(output_path: str) -> None:
             "text_model": gemini_text_model,
             "tts_model": gemini_tts_model,
             "language": gemini_language,
-            "speaker1": {
-                "name": sp1_name,
-                "voice": sp1_voice,
-                "personality": sp1_personality,
-            },
-            "speaker2": {
-                "name": sp2_name,
-                "voice": sp2_voice,
-                "personality": sp2_personality,
-            },
         },
         "research": {
             "rounds_default": int(research_rounds_default),
@@ -893,6 +1016,12 @@ def config_init(output_path: str) -> None:
         },
         "pricing": existing.get("pricing", {}),
     }
+    # Voices: a chosen duo writes gemini.default_duo; otherwise the manual
+    # speaker1/speaker2 blocks collected above are written verbatim.
+    if default_duo_choice:
+        cfg["gemini"]["default_duo"] = default_duo_choice
+    else:
+        cfg["gemini"].update(speaker_blocks)
     if gemini_tier.strip():
         cfg["gemini"]["service_tier"] = gemini_tier.strip()
 
