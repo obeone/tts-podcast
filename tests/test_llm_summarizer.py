@@ -508,6 +508,35 @@ class TestPromptSectionOrder:
             assert prompt.count(header) == 1, f"Header {header!r} appears multiple times"
 
 
+class TestResearchDirective:
+    """Research directive bullet appears iff research_notes is non-empty."""
+
+    def test_research_directive_present_when_notes_provided(self):
+        """When research_notes is non-empty, directive bullet appears in prompt."""
+        notes = "- Key finding A\n- Key finding B"
+        prompt = _build_prompt(**_build_prompt_default_kwargs(research_notes=notes))
+        assert "MUST incorporate substantively" in prompt
+
+    def test_research_directive_absent_when_notes_empty(self):
+        """When research_notes is empty, directive bullet is absent."""
+        prompt = _build_prompt(**_build_prompt_default_kwargs(research_notes=""))
+        assert "MUST incorporate substantively" not in prompt
+
+    def test_research_directive_absent_when_notes_whitespace(self):
+        """When research_notes is whitespace-only, directive bullet is absent."""
+        prompt = _build_prompt(**_build_prompt_default_kwargs(research_notes="   \n\t  "))
+        assert "MUST incorporate substantively" not in prompt
+
+    def test_research_directive_in_instructions_block(self):
+        """Directive bullet appears inside the Instructions block, before Articles."""
+        notes = "- Key finding"
+        prompt = _build_prompt(**_build_prompt_default_kwargs(research_notes=notes))
+        instructions_pos = prompt.index("Instructions:")
+        directive_pos = prompt.index("MUST incorporate substantively")
+        articles_pos = prompt.index("Articles:")
+        assert instructions_pos < directive_pos < articles_pos
+
+
 class TestNoFlagsByteIdentical:
     """Backward-compat snapshot guarantee: defaults produce the frozen baseline."""
 
