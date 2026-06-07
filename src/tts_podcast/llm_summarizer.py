@@ -78,10 +78,10 @@ _EXAMPLE_PAREN_CUES = """\
 {speaker2}: (sceptique) Mouais. On verra à l'usage."""
 
 _RESEARCH_SECTION_TEMPLATE = """\
-Complementary research (from Google Search grounding — use to enrich the \
-discussion and weave naturally into the dialogue; when you credit a source \
-out loud, use only a short reference such as the domain or publication name, \
-never the full URL):
+Complementary research (from Google Search grounding — the dialogue MUST \
+incorporate these findings substantively; when you credit a source out loud, \
+use only a short reference such as the domain or publication name, never the \
+full URL):
 {notes}
 
 """
@@ -106,7 +106,7 @@ shorter than this.
 - Soft maximum: ~{max_words} words (~{max_minutes:.0f} min). Wrap up before \
 exceeding this; trim depth on secondary points rather than blowing past it.
 - Keep the tone informative but lively — like two curious friends catching up on tech news.
-{style_block}{angle_line}- Reflect each host's personality in their speaking style and reactions.
+{style_block}{angle_line}{research_directive_line}- Reflect each host's personality in their speaking style and reactions.
 {delivery_cues_guidance}
 - Use shorter sentences for excitement, longer ones for analysis.
 - Never read a full URL aloud — they sound awful in speech. When a speaker \
@@ -269,6 +269,33 @@ def _render_angle_line(angle: str | None) -> str:
     )
 
 
+def _render_research_directive(research_notes: str) -> str:
+    """
+    Render the research-integration directive bullet inside ``Instructions:``.
+
+    Returns the empty string when *research_notes* is blank so the prompt
+    stays byte-identical to runs without research.
+
+    Parameters
+    ----------
+    research_notes : str
+        The raw research notes string (may be empty or whitespace-only).
+
+    Returns
+    -------
+    str
+        Either ``""`` or a single bullet line ending with ``"\\n"`` instructing
+        the model to incorporate the research findings substantively.
+    """
+    if not research_notes.strip():
+        return ""
+    return (
+        "- The research notes above contain key findings that the dialogue MUST "
+        "incorporate substantively — cover the main findings, bring the outside "
+        "facts into the conversation; a single passing mention is not enough.\n"
+    )
+
+
 def _build_prompt(
     articles: list,
     speaker1_name: str,
@@ -392,6 +419,7 @@ def _build_prompt(
     )
     style_block = _render_style_block(preset_fragment, style_text_resolved)
     angle_line = _render_angle_line(angle_resolved)
+    research_directive_line = _render_research_directive(research_notes)
 
     min_words = max(1, round(min_minutes * words_per_minute))
     target_words = max(min_words, round(target_minutes * words_per_minute))
@@ -417,6 +445,7 @@ def _build_prompt(
         speaker_adjustments_block=speaker_adjustments_block,
         style_block=style_block,
         angle_line=angle_line,
+        research_directive_line=research_directive_line,
     )
 
 
