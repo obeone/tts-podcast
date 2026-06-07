@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # that tts_generator.py prepends before sending to the Gemini TTS API.
 _MAX_CHUNK_BYTES = 3000
 
+# Maximum number of generation attempts before raising a hard error.
+_DIALOGUE_MAX_ATTEMPTS = 3
+
+_THINKING_LEVEL_VALID = {"minimal", "low", "medium", "high"}
+
 
 _AUDIO_TAGS_GUIDANCE = """\
 - When a speaker turn has a distinct emotional or pacing colour, start it with \
@@ -170,6 +175,112 @@ def _audio_tags_enabled(gemini_cfg: dict) -> bool:
         )
     tts_model = str(gemini_cfg.get("tts_model", "")).lower()
     return tts_model.startswith("gemini-3")
+
+
+def _build_thinking_config(
+    model: str,
+    thinking_level: str | None,
+    thinking_budget: int | None,
+) -> types.ThinkingConfig | None:
+    """
+    Return a ``types.ThinkingConfig`` for the model family, or ``None``.
+
+    Gemini 3.x models use ``thinking_level`` (a string enum); Gemini 2.5 and
+    other models use ``thinking_budget`` (an integer).  Passing the wrong field
+    for a model family is silently ignored with a warning so callers can set
+    both in config without errors.
+
+    Parameters
+    ----------
+    model : str
+        The Gemini model name (e.g. ``"gemini-3.5-flash"``).
+    thinking_level : str or None
+        Desired thinking level for Gemini 3.x models.  Accepted values
+        (case-insensitive): ``"minimal"``, ``"low"``, ``"medium"``,
+        ``"high"``.  ``None`` or empty string means "not set".
+    thinking_budget : int or None
+        Thinking token budget for Gemini 2.5 / other models.  ``0`` disables
+        thinking; ``-1`` means dynamic.  ``None`` means "not set".
+
+    Returns
+    -------
+    types.ThinkingConfig or None
+        A configured ``ThinkingConfig`` instance, or ``None`` when no
+        configuration applies (not set, wrong family, or invalid value).
+    """
+    is_3x = str(model).startswith("gemini-3")
+
+    # Normalise: treat empty string as "not set"
+    level_normalised: str | None = None
+    if thinking_level is not None and str(thinking_level).strip():
+        level_normalised = str(thinking_level).strip().lower()
+
+    budget_set = thinking_budget is not None
+
+    if is_3x:
+        if level_normalised is not None:
+            if level_normalised not in _THINKING_LEVEL_VALID:
+                logger.warning(
+                    "Invalid thinking_level %r for model %r — must be one of %s. "
+                    "Ignoring.",
+                    thinking_level,
+                    model,
+                    sorted(_THINKING_LEVEL_VALID),
+                )
+                return None
+            return types.ThinkingConfig(thinking_level=level_normalised)
+        if budget_set:
+            logger.warning(
+                "thinking_budget is ignored for Gemini 3.x model %r — "
+                "use thinking_level (minimal|low|medium|high) instead.",
+                model,
+            )
+        return None
+    else:
+        if budget_set:
+            return types.ThinkingConfig(thinking_budget=int(thinking_budget))
+        if level_normalised is not None:
+            logger.warning(
+                "thinking_level is ignored for non-3.x model %r — "
+                "use thinking_budget (int tokens) instead.",
+                model,
+            )
+        return None
+
+
+def _has_speaker_turns(
+    text: str,
+    speaker1_name: str,
+    speaker2_name: str,
+) -> bool:
+    """
+    Return ``True`` iff *text* contains at least one valid speaker turn.
+
+    A valid speaker turn is a stripped line that starts with
+    ``"<SpeakerName>:"``.  This mirrors the boundary detection used by
+    :func:`_split_dialogue_into_chunks`.
+
+    Parameters
+    ----------
+    text : str
+        The raw dialogue text returned by the LLM.
+    speaker1_name : str
+        Name of the first speaker.
+    speaker2_name : str
+        Name of the second speaker.
+
+    Returns
+    -------
+    bool
+        ``True`` when at least one line starts with a recognised speaker prefix.
+    """
+    prefix1 = f"{speaker1_name}:"
+    prefix2 = f"{speaker2_name}:"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix1) or stripped.startswith(prefix2):
+            return True
+    return False
 
 
 def _render_speaker_adjustments_block(
@@ -637,6 +748,12 @@ def generate_dialogue(
         dialogue_cfg.get("max_duration_minutes", round(target_minutes * 1.5, 1))
     )
 
+    thinking_level = dialogue_cfg.get("thinking_level")
+    thinking_budget = dialogue_cfg.get("thinking_budget")
+    thinking_cfg = _build_thinking_config(
+        gemini_cfg["text_model"], thinking_level, thinking_budget
+    )
+
     audio_tags = _audio_tags_enabled(gemini_cfg)
     if audio_tags:
         logger.info("Audio tags enabled for dialogue prompt (tts_model=%s).", gemini_cfg.get("tts_model"))
@@ -677,6 +794,8 @@ def generate_dialogue(
         config_kwargs["http_options"] = types.HttpOptions(
             headers={"x-goog-api-service-tier": service_tier},
         )
+    if thinking_cfg is not None:
+        config_kwargs["thinking_config"] = thinking_cfg
 
     @gemini_retry
     def _call_api():
@@ -686,10 +805,36 @@ def generate_dialogue(
             config=types.GenerateContentConfig(**config_kwargs),
         )
 
-    response = _call_api()
+    dialogue_text: str = ""
+    ok = False
+    for attempt in range(1, _DIALOGUE_MAX_ATTEMPTS + 1):
+        response = _call_api()
 
-    if token_tracker is not None:
-        token_tracker.record_usage(gemini_cfg["text_model"], response.usage_metadata)
+        if token_tracker is not None:
+            token_tracker.record_usage(gemini_cfg["text_model"], response.usage_metadata)
+
+        dialogue_text = response.text or ""
+        ok = bool(dialogue_text) and _has_speaker_turns(
+            dialogue_text, speaker1_name, speaker2_name
+        )
+        if ok:
+            break
+        snippet = dialogue_text[:200].replace("\n", "\\n")
+        logger.warning(
+            "Attempt %d/%d: dialogue has no speaker turns (or is empty). "
+            "Snippet: %r. Retrying.",
+            attempt,
+            _DIALOGUE_MAX_ATTEMPTS,
+            snippet,
+        )
+
+    if not ok:
+        snippet = dialogue_text[:200].replace("\n", "\\n")
+        raise RuntimeError(
+            f"Gemini returned no properly-formatted dialogue (no speaker turns) "
+            f"after {_DIALOGUE_MAX_ATTEMPTS} attempt(s). "
+            f"Last response snippet: {snippet!r}"
+        )
 
     if progress is not None and task_id is not None:
         progress.advance(task_id)
@@ -698,10 +843,6 @@ def generate_dialogue(
                 task_id,
                 description=f"[cyan]Dialogue[/cyan] — {token_tracker.live_line()}",
             )
-
-    dialogue_text = response.text
-    if not dialogue_text:
-        raise RuntimeError("Gemini returned an empty dialogue response.")
 
     logger.info("Received dialogue of %d chars from Gemini.", len(dialogue_text))
 
