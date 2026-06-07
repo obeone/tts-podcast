@@ -49,6 +49,13 @@ gemini:
     # to word counts in the prompt.  150 wpm is a typical two-host pace;
     # raise it (~170) for faster French, lower (~130) for deliberate English.
     words_per_minute: 150
+    # Control model "thinking" for the dialogue call (reduces the chance a
+    # thinking model derails and emits planning notes instead of dialogue).
+    # For Gemini 3.x text models use thinking_level (minimal|low|medium|high;
+    # default medium). For Gemini 2.5 models use thinking_budget (int tokens;
+    # 0 disables, -1 dynamic). "low" is recommended for reliable dialogue.
+    # thinking_level: low
+    # thinking_budget: 0
   tts_style:
     pace: "slow and deliberate" # natural-language pace for TTS preamble
     scene: "Two friends co-hosting a casual French tech podcast in a cozy studio"
