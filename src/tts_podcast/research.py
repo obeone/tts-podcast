@@ -48,6 +48,21 @@ Articles:
 {articles}
 """
 
+_ROUND_1_SEARCH_PROMPT = """\
+You are a research assistant for a podcast. The host wants to record an \
+episode about the topic below. Build SUBSTANTIVE, COMPREHENSIVE coverage \
+of the topic itself: background and context, key facts and figures, current \
+state of affairs, notable recent developments, the main perspectives and \
+debates, and concrete examples that could make the episode engaging. \
+Use Google Search aggressively — search from multiple angles. Cite every \
+fact you add by URL. Produce thorough bullet-point notes in {language}; \
+aim for depth rather than brevity so the host has ample material for a \
+full-length episode.
+{angle_block}
+Topic:
+{articles}
+"""
+
 _ROUND_N_PROMPT = """\
 You are a research assistant for a podcast. Below: the original article(s) \
 plus the research notes from previous rounds. Identify gaps, uncertainties, \
@@ -434,12 +449,23 @@ def conduct_research(
 
     for i in range(rounds):
         if i == 0:
-            prompt = _ROUND_1_PROMPT.format(
-                language=language,
-                articles=articles_text,
-                angle_block=angle_block,
+            all_search = all(
+                getattr(s, "kind", "url") == "search" for s in sources
             )
-            query_hint = "initial complementary angles"
+            if all_search:
+                prompt = _ROUND_1_SEARCH_PROMPT.format(
+                    language=language,
+                    articles=articles_text,
+                    angle_block=angle_block,
+                )
+                query_hint = "comprehensive topic coverage (search-only)"
+            else:
+                prompt = _ROUND_1_PROMPT.format(
+                    language=language,
+                    articles=articles_text,
+                    angle_block=angle_block,
+                )
+                query_hint = "initial complementary angles"
         else:
             previous_notes = _build_combined_notes(completed_rounds) or "(no prior notes)"
             prompt = _ROUND_N_PROMPT.format(
