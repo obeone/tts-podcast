@@ -833,6 +833,19 @@ def config_init(output_path: str) -> None:
         show_default=True,
     )
 
+    click.echo("\n── Dialogue thinking (optional) ─────────────────────────────")
+    dialogue_existing = (
+        existing.get("gemini", {}).get("dialogue", {})
+        if isinstance(existing.get("gemini", {}).get("dialogue"), dict)
+        else {}
+    )
+    dialogue_thinking_level = _prompt(
+        "Dialogue thinking level for Gemini 3.x models "
+        "(minimal|low|medium|high; blank = API default)",
+        str(dialogue_existing.get("thinking_level", "")),
+        show_default=True,
+    )
+
     click.echo("\n── Research ──────────────────────────────────────────────────")
     research_rounds_default = _prompt(
         "Default research rounds (0 disables; override per run with -R)",
@@ -882,6 +895,13 @@ def config_init(output_path: str) -> None:
     }
     if gemini_tier.strip():
         cfg["gemini"]["service_tier"] = gemini_tier.strip()
+
+    # Dialogue section: write only non-empty / non-default values.
+    dialogue_block: dict = {}
+    if dialogue_thinking_level.strip():
+        dialogue_block["thinking_level"] = dialogue_thinking_level.strip()
+    if dialogue_block:
+        cfg["gemini"]["dialogue"] = dialogue_block
 
     # Style & angle: write only the non-empty values under gemini.style.
     style_block: dict[str, str] = {}
