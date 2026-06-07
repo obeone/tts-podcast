@@ -1,140 +1,68 @@
-# tts-podcast
+# 🎙️ tts-podcast
 
-Turn any article URL into a two-voice podcast via Google Gemini TTS, with
-optional iterative Google-Search-grounded research enrichment.
+[![PyPI](https://img.shields.io/pypi/v/tts-podcast?logo=pypi&logoColor=white)](https://pypi.org/project/tts-podcast/)
+![Python](https://img.shields.io/badge/Python-3.13+-blue?logo=python&logoColor=white)
+![Gemini TTS](https://img.shields.io/badge/Gemini-multi--speaker%20TTS-8E75B2?logo=googlegemini&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-`tts-podcast` is a CLI tool that takes one or more article URLs, local
-documents, or web-search queries, optionally enriches them with iterative
-web research, generates a conversational dialogue between two hosts using
-Gemini, and synthesises an MP3 (or WAV) using Gemini's multi-speaker TTS.
+> Turn any article, document, or search query into a **two-voice podcast** —
+> scraped, researched, scripted, and voiced by Google Gemini.
 
-## Features
+Feed it URLs, local files, or a topic to search. It scrapes the sources,
+optionally runs iterative Google-Search-grounded research, writes a natural
+back-and-forth dialogue between two hosts, and synthesises an MP3 (or WAV)
+with Gemini's multi-speaker TTS — plus a tidy folder of Markdown reports.
 
-- **Any URL → podcast** — feed one or several article URLs; the tool
-  handles scraping, dialogue generation, and audio export.
-- **Local documents** (`-f FILE`) — include `.txt`, `.md`, `.html`, or
-  `.pdf` files directly; no network request is made for them.
-- **Web-search queries** (`-s QUERY`) — pass a natural-language topic;
-  the research stage investigates it via Google Search grounding.
-- **Iterative research** (`--research N`) — runs *N* sequential Gemini
-  rounds using the [`google_search`][grounding] grounding tool. Each round
-  builds on the previous round's findings, drilling into gaps and
-  unanswered questions.
-- **Multi-voice TTS** — two distinct Gemini voices with configurable
-  personalities, scene, and delivery cues.
-- **Named voice duos** — five built-in pairings (`contrast` by default,
-  plus `warm`, `explorer`, `journalist`, `debate`) selectable per run with
-  `--duo`, or define your own; pick from all 30 prebuilt Gemini voices.
-  See [Voice duos](#voice-duos).
-- **Report folder** — generates `overview.md`, `sources.md`, `script.md`,
-  `research.md`, and `summary.md` alongside the audio file.
-- **Token & cost tracking** — accumulates token usage per model and
-  estimates cost based on configurable per-model pricing.
+---
 
-[grounding]: https://ai.google.dev/gemini-api/docs/google-search
+## ✨ Features
 
-## Install
+| | Feature | Description |
+|---|---|---|
+| 🌐 | **Any URL → podcast** | Feed one or several article URLs; scraping, dialogue, and audio are handled end-to-end. |
+| 📄 | **Local documents** | Include `.txt`, `.md`, `.html`, or `.pdf` files with `-f` — no network request. |
+| 🔍 | **Web-search queries** | Pass a natural-language topic with `-s`; the research stage investigates it via Google Search grounding. |
+| 🧠 | **Iterative research** | `--research N` runs *N* sequential grounded rounds, each drilling into the gaps the last one left. |
+| 🎭 | **Multi-voice TTS** | Two distinct Gemini voices with configurable personalities, scene, and delivery cues. |
+| 👥 | **Named voice duos** | Five built-in pairings (`contrast` default, `warm`, `explorer`, `journalist`, `debate`) — or define your own from all 30 prebuilt Gemini voices. |
+| 🎨 | **Style & angle control** | Presets, free-text style, per-episode angle, and per-speaker overlays — without touching the baseline voice acting. |
+| 📑 | **Report folder** | Generates `overview.md`, `sources.md`, `script.md`, `research.md`, and `summary.md` next to the audio. |
+| 💸 | **Token & cost tracking** | Accumulates per-model token usage and estimates cost from configurable pricing. |
+| 🥷 | **Stealth fallback** | Optional CloakBrowser retry for pages that block plain scraping (Cloudflare, 403/429, JS-only). |
 
-```bash
-uv sync
-```
+---
 
-`ffmpeg` is required for audio export (skip if you only use `--no-audio` /
-`--dry-run`):
+## 🚀 Quickstart
+
+Get a podcast out of a single URL in three steps:
 
 ```bash
-brew install ffmpeg          # macOS
-sudo apt install ffmpeg      # Debian/Ubuntu
-```
-
-## Configure
-
-```bash
-uv run tts-podcast config init
-```
-
-Then export your Gemini API key:
-
-```bash
+# 1. Get the Gemini API key into your environment
 export GEMINI_API_KEY=<your key>
+
+# 2. Make sure ffmpeg is available (audio export needs it)
+brew install ffmpeg            # macOS  ·  apt: sudo apt install ffmpeg
+
+# 3. Run it — no install required
+uvx tts-podcast run https://blog.example.com/article
 ```
 
-The default config path is `$XDG_CONFIG_HOME/tts-podcast/config.yaml`
-(typically `~/.config/tts-podcast/config.yaml`). See
-[`config.example.yaml`](config.example.yaml) for the full schema.
+That's it: you get an `.mp3` plus a `tts_<stem>/` folder of Markdown reports.
+Want to hear the script before spending TTS tokens? Add `-n` for a dry run.
 
-## Usage
+> Prefer a permanent install or `pip`? See [Installation](#-installation).
 
-```bash
-# Single URL, no research
-uv run tts-podcast run https://blog.example.com/article
+---
 
-# Multiple URLs with two rounds of complementary research
-uv run tts-podcast run -R 2 \
-    https://blog.example.com/a \
-    https://blog.example.com/b
-
-# Local document (PDF, txt, md, html) — no network request
-uv run tts-podcast run -n -f paper.pdf
-
-# Web-search query — research auto-bumped to 1 if no other inputs
-uv run tts-podcast run -n -s "agentic AI memory systems"
-
-# Mixed: URL + local file + search query in one episode
-uv run tts-podcast run -n https://blog.example.com/article \
-    -f notes.md -s "related follow-up topic"
-
-# Preview the dialogue without calling TTS
-uv run tts-podcast run -n https://blog.example.com/article
-
-# Generate the script + report but skip audio synthesis
-uv run tts-podcast run -A https://blog.example.com/article
-
-# Style & angle: nudge tone via a preset + free text, focus on one angle
-uv run tts-podcast run -R 1 \
-    --preset academic \
-    --style "extra rigorous, French academic feel" \
-    --angle "the regulatory implications" \
-    https://blog.example.com/article
-
-# Per-episode speaker overlay (TTS voice acting stays unchanged)
-uv run tts-podcast run --speaker1-style "more skeptical than usual" \
-    --speaker2-style "extra warm and forgiving" \
-    https://blog.example.com/article
-
-# List the available voice duos, then run one (debate pairs well with --preset debate)
-uv run tts-podcast duos
-uv run tts-podcast run --duo debate --preset debate https://blog.example.com/article
-```
-
-### Key flags
-
-| Flag | Description |
-|---|---|
-| `-f, --file FILE` | Local document to include (repeatable). Supports `.txt`, `.md`, `.html`, `.pdf`. |
-| `-s, --search QUERY` | Web-search query to seed the podcast (repeatable). Research auto-bumped to 1 if search-only. |
-| `-R, --research N` | Number of Google-Search-grounded research rounds (default 0). |
-| `--duo NAME` | Named voice duo for both speakers (`warm`, `contrast`, `explorer`, `journalist`, `debate`). Overrides `gemini.default_duo` and legacy `speakerN` blocks. See `tts-podcast duos`. |
-| `-n, --dry-run` | Print dialogue to stdout, no TTS. |
-| `-A, --no-audio` | Generate script + report only. |
-| `-o, --output-dir DIR` | Output directory (overrides config). |
-| `--no-report` | Skip the report folder. |
-| `-v, --verbose` | Enable DEBUG logging. |
-| `--preset NAME` | Named style preset for the dialogue (`casual`, `academic`, `humorous`, `debate`, `vulgarized`, or `none` to disable a configured default). |
-| `--style TEXT` | Free-text style guidance (capped at 500 chars). Composes with `--preset`. |
-| `--speaker1-style TEXT` / `--speaker2-style TEXT` | Per-episode style overlay for the given speaker. The baseline personality (and TTS voice acting) stays unchanged. |
-| `--angle TEXT` | Episode angle. Steers the dialogue prompt and the first research round only. |
-
-Run `uv run tts-podcast run --help` for the full list.
-
-## Voice duos
+## 👥 Voice duos
 
 A *duo* bundles both speakers — name, prebuilt Gemini voice, and baseline
-personality — under a single slug, so you switch the whole pairing at once
-instead of editing `speaker1` / `speaker2` by hand. List them anytime:
+personality — under one slug, so you swap the whole pairing at once instead of
+editing `speaker1` / `speaker2` by hand.
 
 ```bash
-uv run tts-podcast duos
+tts-podcast duos          # list them (no API key needed)
+tts-podcast run --duo journalist https://blog.example.com/article
 ```
 
 ### Built-in duos
@@ -145,36 +73,16 @@ uv run tts-podcast duos
 | `warm` | Sulafat (Warm) | Achird (Friendly) | Accessible, mainstream feel |
 | `explorer` | Fenrir (Excitable) | Sadaltager (Knowledgeable) | Excited explorer + calm expert; vulgarisation-friendly |
 | `journalist` | Zephyr (Bright) | Algieba (Smooth) | Fast-paced tech-journalism feel |
-| `debate` | Laomedeia (Upbeat) | Algenib (Gravelly) | Opposing viewpoints — techno-optimist vs skeptic (pair with `--preset debate`) |
+| `debate` | Laomedeia (Upbeat) | Algenib (Gravelly) | Opposing viewpoints — optimist vs skeptic (pair with `--preset debate`) |
 
-> Gemini doesn't officially document voice gender; the pairings are curated
-> from each voice's [official descriptor][voices] plus community reports.
-> Audition voices in [Google AI Studio][voices] before committing.
-
-[voices]: https://ai.google.dev/gemini-api/docs/speech-generation
-
-### Selecting a duo
-
-```bash
-# Pick a duo for one run (overrides config)
-uv run tts-podcast run --duo journalist https://blog.example.com/article
-
-# Opposing viewpoints, structured as a debate
-uv run tts-podcast run --duo debate --preset debate https://blog.example.com/article
-```
-
-Set a persistent default in `config.yaml`:
-
-```yaml
-gemini:
-  default_duo: contrast
-```
+> Gemini doesn't officially document voice gender; pairings are curated from
+> each voice's [official descriptor][voices] plus community reports. Audition
+> them in [Google AI Studio][voices] before committing.
 
 ### Custom duos
 
-Define your own under `gemini.duos`; they're merged over the built-ins
-(same slug overrides one, a new slug adds one). Match each voice's
-descriptor to the personality for the best result:
+Define your own under `gemini.duos`; they merge over the built-ins (same slug
+overrides, a new slug adds one):
 
 ```yaml
 gemini:
@@ -192,13 +100,141 @@ gemini:
         personality: "hard-nosed skeptic; probes risks and costs"
 ```
 
-**Resolution precedence:** `--duo` > `gemini.default_duo` >
-legacy `gemini.speaker1` / `speaker2` blocks > built-in `contrast`. A config
+**Resolution precedence:** `--duo` › `gemini.default_duo` ›
+legacy `gemini.speaker1` / `speaker2` blocks › built-in `contrast`. A config
 that defines only the legacy `speakerN` blocks keeps working unchanged.
 
-## Output layout
+---
 
+## 🎚️ Usage
+
+```bash
+# Single URL, no research
+tts-podcast run https://blog.example.com/article
+
+# Multiple URLs with two rounds of complementary research
+tts-podcast run -R 2 https://blog.example.com/a https://blog.example.com/b
+
+# Local document — no network request
+tts-podcast run -n -f paper.pdf
+
+# Web-search query — research auto-bumped to 1 if it's the only input
+tts-podcast run -n -s "agentic AI memory systems"
+
+# Mixed: URL + local file + search query in one episode
+tts-podcast run -n https://blog.example.com/article -f notes.md -s "follow-up topic"
+
+# Preview the dialogue without calling TTS
+tts-podcast run -n https://blog.example.com/article
+
+# Generate script + report but skip audio synthesis
+tts-podcast run -A https://blog.example.com/article
+
+# Style & angle: nudge tone via preset + free text, focus on one angle
+tts-podcast run -R 1 \
+    --preset academic \
+    --style "extra rigorous, French academic feel" \
+    --angle "the regulatory implications" \
+    https://blog.example.com/article
+
+# Per-episode speaker overlay (TTS voice acting stays unchanged)
+tts-podcast run \
+    --speaker1-style "more skeptical than usual" \
+    --speaker2-style "extra warm and forgiving" \
+    https://blog.example.com/article
+
+# Opposing viewpoints, structured as a debate
+tts-podcast run --duo debate --preset debate https://blog.example.com/article
 ```
+
+> Running from a source checkout? Prefix every command with `uv run`
+> (e.g. `uv run tts-podcast run …`).
+
+### Key flags
+
+| Flag | Description |
+|---|---|
+| `-f, --file FILE` | Local document to include (repeatable). `.txt`, `.md`, `.html`, `.pdf`. |
+| `-s, --search QUERY` | Web-search query to seed the podcast (repeatable). Auto-bumps research to 1 if search-only. |
+| `-R, --research N` | Number of Google-Search-grounded research rounds (default `0`). |
+| `--duo NAME` | Named voice duo (`contrast`, `warm`, `explorer`, `journalist`, `debate`). |
+| `--preset NAME` | Style preset: `casual`, `academic`, `humorous`, `debate`, `vulgarized`, or `none`. |
+| `--style TEXT` | Free-text style guidance (≤ 500 chars). Composes with `--preset`. |
+| `--speaker1-style` / `--speaker2-style` | Per-episode overlay for one speaker; baseline voice unchanged. |
+| `--angle TEXT` | Episode angle. Steers the dialogue and the first research round only. |
+| `-d, --duration MIN` | Target episode duration in minutes. |
+| `-n, --dry-run` | Print dialogue to stdout, no TTS. |
+| `-A, --no-audio` | Generate script + report only. |
+| `-o, --output-dir DIR` | Output directory (overrides config). |
+| `--no-report` | Skip the report folder. |
+| `-v, --verbose` | Enable DEBUG logging. |
+
+Run `tts-podcast run --help` for the full list.
+
+---
+
+## ⚙️ Configuration
+
+Scaffold a config file, then export your Gemini API key:
+
+```bash
+tts-podcast config init
+export GEMINI_API_KEY=<your key>
+```
+
+The config lives at `$XDG_CONFIG_HOME/tts-podcast/config.yaml` (typically
+`~/.config/tts-podcast/config.yaml`). The full schema is in
+[`config.example.yaml`](config.example.yaml). The API key is read at runtime
+from the env var named by `gemini.api_key_env` (default `GEMINI_API_KEY`) and
+loaded from a local `.env` automatically.
+
+```yaml
+gemini:
+  api_key_env: GEMINI_API_KEY
+  default_duo: contrast        # persistent voice pairing
+  dialogue:
+    target_duration_minutes: 8
+```
+
+---
+
+## 📦 Installation
+
+```bash
+uvx tts-podcast …                # run without installing
+uv tool install tts-podcast      # persistent install via uv
+pipx install tts-podcast         # via pipx
+pip install tts-podcast          # plain pip
+```
+
+**Optional stealth-browser fallback** (pulls a ~200 MB Chromium on first run):
+
+```bash
+uv tool install "tts-podcast[cloak]"
+```
+
+**`ffmpeg` is required for audio export** — skip only if you stick to
+`--no-audio` / `--dry-run`:
+
+```bash
+brew install ffmpeg          # macOS
+sudo apt install ffmpeg      # Debian / Ubuntu
+```
+
+### From source
+
+```bash
+git clone https://github.com/obeone/tts-podcast.git
+cd tts-podcast
+uv sync                      # Python 3.13+
+uv run tts-podcast --help
+```
+
+---
+
+## 📂 Output layout
+
+```text
 <output_dir>/
 ├── <stem>.mp3
 └── tts_<stem>/
@@ -209,22 +245,69 @@ that defines only the legacy `speakerN` blocks keeps working unchanged.
     └── summary.md        # synthetic reference sheet with categorised links
 ```
 
-The stem combines the first URL's hostname, a 6-char digest of the URL
-list, and today's date, e.g. `arxiv.org-a1b2c3-2026-05-23.mp3`.
+The stem combines the first URL's hostname, a 6-char digest of the URL list,
+and today's date — e.g. `arxiv.org-a1b2c3-2026-06-07.mp3`.
 
-## Research cost note
+---
 
-Each `--research` round is a separate Gemini call with Google Search
-grounding enabled, which adds search overhead to the standard input
-token cost. The tool logs the cumulative cost after each round so you
-can watch the bill while iterating.
+## 💸 Research cost note
 
-## Testing
+Each `--research` round is a separate Gemini call with Google Search grounding
+enabled, which adds search overhead to the standard input-token cost. The tool
+logs the cumulative cost after each round, so you can watch the bill while
+iterating.
+
+---
+
+## 🧪 Development
 
 ```bash
-uv run pytest tests/ -v
+uv sync                          # install deps (Python 3.13+)
+uv run pytest tests/ -q          # run the test suite
+uv run ruff check src/ tests/    # lint
 ```
 
-## License
+Tests mock the Gemini SDK rather than hitting the network. See
+[`CLAUDE.md`](CLAUDE.md) for the architecture deep-dive and key invariants.
 
-MIT
+---
+
+## 🔊 How it works
+
+```mermaid
+flowchart TB
+    subgraph IN[" Inputs "]
+        U[🌐 URLs]
+        F[📄 Files<br/>txt · md · html · pdf]
+        S[🔍 Search queries]
+    end
+
+    U --> SC[web_scraper]
+    F --> LL[local_loader]
+    S --> SY[synthetic source]
+
+    SC --> R{🧠 Research?<br/>--research N}
+    LL --> R
+    SY --> R
+
+    R -->|optional| RR[Google Search<br/>grounded rounds]
+    R --> D[💬 llm_summarizer<br/>two-host dialogue]
+    RR --> D
+
+    D --> T[🎙️ Gemini multi-speaker TTS<br/>parallel chunks]
+    T --> A[🎧 audio_exporter<br/>MP3 / WAV]
+    D --> REP[📑 report_generator<br/>Markdown folder]
+```
+
+The pipeline is strictly linear: each stage hands typed data to the next, no
+hidden shared state. Scrape failures don't abort the run — it continues with
+whatever succeeded.
+
+---
+
+## 📝 License
+
+MIT © [Grégoire Compagnon](mailto:obeone@obeone.org)
+
+[grounding]: https://ai.google.dev/gemini-api/docs/google-search
+[voices]: https://ai.google.dev/gemini-api/docs/speech-generation
