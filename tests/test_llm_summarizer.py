@@ -18,6 +18,8 @@ from tts_podcast.llm_summarizer import (
     DialogueChunk,
     _audio_tags_enabled,
     _build_prompt,
+    _build_thinking_config,
+    _has_speaker_turns,
     generate_dialogue,
 )
 from tts_podcast.style_presets import STYLE_PRESETS
@@ -560,3 +562,212 @@ class TestNoFlagsByteIdentical:
             research_notes="",
         )
         assert got == expected, "Backward-compat regression: default prompt drifted from fixture."
+
+
+# ---------------------------------------------------------------------------
+# Tests for _build_thinking_config
+# ---------------------------------------------------------------------------
+
+
+class TestBuildThinkingConfig:
+    """Unit tests for the _build_thinking_config helper."""
+
+    def test_3x_model_valid_level_returns_thinking_config(self):
+        """3.x model + valid thinking_level returns ThinkingConfig with that level."""
+        result = _build_thinking_config("gemini-3.5-flash", "low", None)
+        assert result is not None
+        # The SDK converts the string to a ThinkingLevel enum; compare via .value.
+        assert result.thinking_level.value == "LOW"
+
+    def test_3x_model_level_normalised_lowercase(self):
+        """thinking_level is accepted case-insensitively (SDK normalises to enum)."""
+        result = _build_thinking_config("gemini-3.5-flash", "LOW", None)
+        assert result is not None
+        assert result.thinking_level.value == "LOW"
+
+    def test_3x_model_invalid_level_returns_none(self):
+        """3.x model + invalid thinking_level logs a warning and returns None."""
+        result = _build_thinking_config("gemini-3.5-flash", "turbo", None)
+        assert result is None
+
+    def test_25_model_budget_zero_returns_thinking_config(self):
+        """2.5 model + thinking_budget=0 returns ThinkingConfig with budget 0."""
+        result = _build_thinking_config("gemini-2.5-flash", None, 0)
+        assert result is not None
+        assert result.thinking_budget == 0
+
+    def test_25_model_budget_positive(self):
+        """2.5 model + positive thinking_budget returns ThinkingConfig."""
+        result = _build_thinking_config("gemini-2.5-flash", None, 1024)
+        assert result is not None
+        assert result.thinking_budget == 1024
+
+    def test_nothing_set_returns_none(self):
+        """Neither level nor budget set returns None for any model."""
+        assert _build_thinking_config("gemini-3.5-flash", None, None) is None
+        assert _build_thinking_config("gemini-2.5-flash", None, None) is None
+
+    def test_3x_model_only_budget_set_returns_none(self):
+        """3.x model + only thinking_budget set returns None (budget ignored)."""
+        result = _build_thinking_config("gemini-3.5-flash", None, 512)
+        assert result is None
+
+    def test_25_model_only_level_set_returns_none(self):
+        """Non-3.x model + only thinking_level set returns None (level ignored)."""
+        result = _build_thinking_config("gemini-2.5-flash", "low", None)
+        assert result is None
+
+    def test_empty_string_level_treated_as_not_set(self):
+        """Empty string thinking_level is treated as not set."""
+        assert _build_thinking_config("gemini-3.5-flash", "", None) is None
+
+    def test_all_valid_levels_accepted(self):
+        """All four valid thinking levels are accepted for 3.x models."""
+        for level in ("minimal", "low", "medium", "high"):
+            result = _build_thinking_config("gemini-3.5-flash", level, None)
+            assert result is not None, f"Expected ThinkingConfig for level={level!r}"
+            # SDK normalises to a ThinkingLevel enum; compare via .value.
+            assert result.thinking_level.value == level.upper()
+
+
+# ---------------------------------------------------------------------------
+# Tests for _has_speaker_turns
+# ---------------------------------------------------------------------------
+
+
+class TestHasSpeakerTurns:
+    """Unit tests for the _has_speaker_turns guard helper."""
+
+    def test_valid_dialogue_detected(self):
+        text = "Alex: Hello!\nJordan: Hi there!"
+        assert _has_speaker_turns(text, "Alex", "Jordan") is True
+
+    def test_empty_text_returns_false(self):
+        assert _has_speaker_turns("", "Alex", "Jordan") is False
+
+    def test_no_speaker_prefix_returns_false(self):
+        text = "This is just a planning note without any speaker turns."
+        assert _has_speaker_turns(text, "Alex", "Jordan") is False
+
+    def test_only_first_speaker_returns_true(self):
+        text = "Alex: I am the only speaker here."
+        assert _has_speaker_turns(text, "Alex", "Jordan") is True
+
+    def test_only_second_speaker_returns_true(self):
+        text = "Jordan: Just me today."
+        assert _has_speaker_turns(text, "Alex", "Jordan") is True
+
+    def test_leading_whitespace_stripped(self):
+        text = "  Alex: This line has leading spaces."
+        assert _has_speaker_turns(text, "Alex", "Jordan") is True
+
+
+# ---------------------------------------------------------------------------
+# Tests for the guardrail retry logic in generate_dialogue
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_response(text: str) -> MagicMock:
+    """Build a single fake genai response object."""
+    r = MagicMock()
+    r.text = text
+    r.usage_metadata = MagicMock()
+    return r
+
+
+class TestDialogueGuardrail:
+    """Retry guardrail: no speaker turns triggers retry; raises after all attempts."""
+
+    def test_all_bad_responses_raises_runtime_error(self):
+        """When every attempt returns text with no speaker turns, RuntimeError is raised."""
+        bad_response = _make_fake_response(
+            "I am thinking about the structure of the dialogue..."
+        )
+        mock_genai = MagicMock()
+        mock_client = MagicMock()
+        mock_genai.Client.return_value = mock_client
+        mock_client.models.generate_content.return_value = bad_response
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            with pytest.raises(RuntimeError, match="no speaker turns"):
+                generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+    def test_retry_on_bad_then_good_returns_chunks(self):
+        """When the first attempt is bad but the second is valid, chunks are returned."""
+        bad_response = _make_fake_response("Planning: let me think about this...")
+        good_response = _make_fake_response(SHORT_DIALOGUE)
+
+        mock_genai = MagicMock()
+        mock_client = MagicMock()
+        mock_genai.Client.return_value = mock_client
+        mock_client.models.generate_content.side_effect = [bad_response, good_response]
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        assert len(chunks) > 0
+        assert all(isinstance(c, DialogueChunk) for c in chunks)
+        # Two API calls were made (one bad, one good)
+        assert mock_client.models.generate_content.call_count == 2
+
+    def test_empty_response_also_triggers_retry(self):
+        """An empty response.text is treated as a failed attempt."""
+        empty_response = _make_fake_response("")
+        good_response = _make_fake_response(SHORT_DIALOGUE)
+
+        mock_genai = MagicMock()
+        mock_client = MagicMock()
+        mock_genai.Client.return_value = mock_client
+        mock_client.models.generate_content.side_effect = [empty_response, good_response]
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        assert len(chunks) > 0
+
+
+# ---------------------------------------------------------------------------
+# Tests for thinking_config wiring in generate_dialogue
+# ---------------------------------------------------------------------------
+
+
+GEMINI_CFG_3X = {
+    "api_key": "test-api-key",
+    "text_model": "gemini-3.5-flash",
+    "tts_model": "gemini-3.1-flash-tts-preview",
+    "speaker1": {"name": "Alex", "voice": "Puck"},
+    "speaker2": {"name": "Jordan", "voice": "Charon"},
+    "dialogue": {"thinking_level": "low"},
+}
+
+
+class TestThinkingConfigWiring:
+    """thinking_config is passed to generate_content when configured."""
+
+    def test_thinking_config_passed_for_3x_model_with_level(self):
+        """GenerateContentConfig carries thinking_config when thinking_level is set."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG_3X, "Alex", "Jordan")
+
+        call_kwargs = mock_genai.Client.return_value.models.generate_content.call_args.kwargs
+        config_obj = call_kwargs.get("config")
+        assert config_obj is not None
+        assert config_obj.thinking_config is not None
+        # SDK normalises to a ThinkingLevel enum; compare via .value.
+        assert config_obj.thinking_config.thinking_level.value == "LOW"
+
+    def test_no_thinking_config_when_not_set(self):
+        """GenerateContentConfig has no thinking_config when dialogue section is absent."""
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        call_kwargs = mock_genai.Client.return_value.models.generate_content.call_args.kwargs
+        config_obj = call_kwargs.get("config")
+        assert config_obj is not None
+        # thinking_config should be absent or None
+        thinking = getattr(config_obj, "thinking_config", None)
+        assert thinking is None
