@@ -22,6 +22,11 @@ dependencies = [
     "trafilatura>=2.0.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/obeone/tts-podcast"
+Repository = "https://github.com/obeone/tts-podcast"
+Issues = "https://github.com/obeone/tts-podcast/issues"
+
 [project.optional-dependencies]
 # Stealth-browser fallback for pages that block plain HTTP scraping
 # (Cloudflare, reCAPTCHA, etc.).  Pulls in a ~200 MB Chromium binary on first
