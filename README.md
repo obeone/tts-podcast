@@ -11,7 +11,7 @@
 Feed it URLs, local files, or a topic to search. It scrapes the sources,
 optionally runs iterative Google-Search-grounded research, writes a natural
 back-and-forth dialogue between two hosts, and synthesises an MP3 (or WAV)
-with Gemini's multi-speaker TTS — plus a tidy folder of Markdown reports.
+with Gemini's multi-speaker TTS — plus an optional folder of Markdown reports.
 
 ---
 
@@ -26,7 +26,7 @@ with Gemini's multi-speaker TTS — plus a tidy folder of Markdown reports.
 | 🎭 | **Multi-voice TTS** | Two distinct Gemini voices with configurable personalities, scene, and delivery cues. |
 | 👥 | **Named voice duos** | Five built-in pairings (`contrast` default, `warm`, `explorer`, `journalist`, `debate`) — or define your own from all 30 prebuilt Gemini voices. |
 | 🎨 | **Style & angle control** | Presets, free-text style, per-episode angle, and per-speaker overlays — without touching the baseline voice acting. |
-| 📑 | **Report folder** | Generates `overview.md`, `sources.md`, `script.md`, `research.md`, and `summary.md` next to the audio. |
+| 📑 | **Report folder** | Opt-in with `--report`: writes `overview.md`, `sources.md`, `script.md`, `research.md`, and `summary.md` next to the audio. |
 | 💸 | **Token & cost tracking** | Accumulates per-model token usage and estimates cost from configurable pricing. |
 | 🥷 | **Stealth fallback** | Optional CloakBrowser retry for pages that block plain scraping (Cloudflare, 403/429, JS-only). |
 
@@ -47,8 +47,9 @@ brew install ffmpeg            # macOS  ·  apt: sudo apt install ffmpeg
 uvx tts-podcast run https://blog.example.com/article
 ```
 
-That's it: you get an `.mp3` plus a `tts_<stem>/` folder of Markdown reports.
-Want to hear the script before spending TTS tokens? Add `-n` for a dry run.
+That's it: you get an `.mp3`. Add `--report` for a `tts_<stem>/` folder of
+Markdown reports, or `-O out.mp3` / `-O -` to choose the filename or stream to
+stdout. Want to hear the script before spending TTS tokens? Add `-n` for a dry run.
 
 > Prefer a permanent install or `pip`? See [Installation](#-installation).
 
@@ -127,8 +128,12 @@ tts-podcast run -n https://blog.example.com/article -f notes.md -s "follow-up to
 # Preview the dialogue without calling TTS
 tts-podcast run -n https://blog.example.com/article
 
-# Generate script + report but skip audio synthesis
+# Generate the dialogue script but skip audio synthesis (add --report for the folder)
 tts-podcast run -A https://blog.example.com/article
+
+# Pick the output filename, or stream the audio straight to stdout
+tts-podcast run -O episode.mp3 https://blog.example.com/article
+tts-podcast run -O - https://blog.example.com/article > episode.mp3
 
 # Style & angle: nudge tone via preset + free text, focus on one angle
 tts-podcast run -R 1 \
@@ -164,9 +169,10 @@ tts-podcast run --duo debate --preset debate https://blog.example.com/article
 | `--angle TEXT` | Episode angle. Steers the dialogue and the first research round only. |
 | `-d, --duration MIN` | Target episode duration in minutes. |
 | `-n, --dry-run` | Print dialogue to stdout, no TTS. |
-| `-A, --no-audio` | Generate script + report only. |
+| `-A, --no-audio` | Skip TTS synthesis and audio export. |
 | `-o, --output-dir DIR` | Output directory (overrides config). |
-| `--no-report` | Skip the report folder. |
+| `-O, --output FILE` | Output file path or bare name. `-` streams the audio to stdout. |
+| `-r, --report` | Generate the report folder (off by default). |
 | `-v, --verbose` | Enable DEBUG logging. |
 
 Run `tts-podcast run --help` for the full list.
@@ -237,7 +243,7 @@ uv run tts-podcast --help
 ```text
 <output_dir>/
 ├── <stem>.mp3
-└── tts_<stem>/
+└── tts_<stem>/            # only with --report
     ├── overview.md       # metadata, link breakdown, token/cost summary
     ├── sources.md        # per-source content (title, URL, summary, full text)
     ├── script.md         # full two-host dialogue
@@ -246,7 +252,9 @@ uv run tts-podcast --help
 ```
 
 The stem combines the first URL's hostname, a 6-char digest of the URL list,
-and today's date — e.g. `arxiv.org-a1b2c3-2026-06-07.mp3`.
+and today's date — e.g. `arxiv.org-a1b2c3-2026-06-07.mp3`. Override the whole
+filename with `-O NAME` (a bare name lands in `<output_dir>`), or pass `-O -`
+to stream the audio to stdout instead of writing a file.
 
 ---
 
