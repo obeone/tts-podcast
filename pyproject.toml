@@ -1,6 +1,6 @@
 [project]
 name = "tts-podcast"
-version = "0.5.0"
+version = "0.6.0"
 description = "Turn any web article into a two-voice podcast via Gemini TTS, with iterative Google Search enrichment."
 readme = "README.md"
 requires-python = ">=3.13"
