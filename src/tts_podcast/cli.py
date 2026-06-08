@@ -36,7 +36,7 @@ from rich.progress import (
 )
 from rich.syntax import Syntax
 
-from tts_podcast.audio_exporter import export_audio
+from tts_podcast.audio_exporter import encode_audio, export_audio
 from tts_podcast.config import ConfigError, load_config
 from tts_podcast.duos import BUILTIN_DUOS, DEFAULT_DUO, describe_duos, resolve_duo
 from tts_podcast.link_extractor import extract_links
@@ -273,6 +273,49 @@ def _build_output_stem(identifiers: list[str]) -> str:
     return f"{label}-{digest}-{date.today().isoformat()}"
 
 
+def _resolve_output_path(
+    output_file: str | None,
+    output_dir: str,
+    stem: str,
+    default_fmt: str,
+) -> tuple[Path, str]:
+    """
+    Resolve the audio destination path and format from ``--output``.
+
+    When *output_file* is ``None`` the auto-generated ``<stem>.<fmt>`` name is
+    placed inside *output_dir*.  An explicit *output_file* with a directory
+    component (or an absolute path) is honoured verbatim; a bare filename
+    lands inside *output_dir*.  The format is taken from the file extension
+    when present, otherwise *default_fmt*.
+
+    Parameters
+    ----------
+    output_file : str | None
+        Value of ``--output`` (never ``"-"``; stdout is handled by the caller).
+    output_dir : str
+        Directory used for the auto-generated name and for bare filenames.
+    stem : str
+        Filename stem for the auto-generated name.
+    default_fmt : str
+        Fallback format when the path carries no extension.
+
+    Returns
+    -------
+    tuple[Path, str]
+        The resolved output path and the format string.
+    """
+    if not output_file:
+        return Path(output_dir) / f"{stem}.{default_fmt}", default_fmt
+
+    candidate = Path(output_file)
+    if candidate.is_absolute() or candidate.parent != Path("."):
+        out_path = candidate
+    else:
+        out_path = Path(output_dir) / candidate
+    fmt = candidate.suffix.lstrip(".").lower() or default_fmt
+    return out_path, fmt
+
+
 # ---------------------------------------------------------------------------
 # Top-level group
 # ---------------------------------------------------------------------------
@@ -349,6 +392,17 @@ def cli() -> None:
     help="Directory where the podcast file is written. Overrides config output.dir.",
 )
 @click.option(
+    "-O", "--output",
+    "output_file",
+    default=None,
+    help=(
+        "Output file path (or bare name) for the audio. Use '-' to stream it "
+        "to stdout. A bare name lands in --output-dir; a path with a directory "
+        "component is used as-is. Format is inferred from the extension, "
+        "otherwise output.format."
+    ),
+)
+@click.option(
     "-n", "--dry-run",
     is_flag=True,
     default=False,
@@ -359,7 +413,7 @@ def cli() -> None:
     "no_audio",
     is_flag=True,
     default=False,
-    help="Generate the dialogue script and report, but skip TTS synthesis and audio export.",
+    help="Skip TTS synthesis and audio export (add --report for the report folder).",
 )
 @click.option(
     "--no-progress",
@@ -376,8 +430,9 @@ def cli() -> None:
 )
 @click.option(
     "-r/-N", "--report/--no-report",
-    default=True,
-    help="Generate a report folder (sources, script, research, links, overview) alongside the podcast.",
+    default=False,
+    help="Generate a report folder (sources, script, research, links, overview) "
+         "alongside the podcast. Off by default; pass --report to enable it.",
 )
 @click.option(
     "--duo",
@@ -446,6 +501,7 @@ def run(
     research_rounds: int | None,
     target_duration: float | None,
     output_dir_override: str | None,
+    output_file: str | None,
     dry_run: bool,
     no_audio: bool,
     no_progress: bool,
@@ -542,6 +598,14 @@ def run(
     )
     output_fmt: str = output_cfg.get("format", "mp3")
 
+    # When streaming audio to stdout, every status line, progress bar, and
+    # summary must go to stderr so they never corrupt the binary blob.
+    to_stdout: bool = output_file == "-"
+
+    def _status(message: str) -> None:
+        """Emit a status line — on stderr when audio is streamed to stdout."""
+        click.echo(message, err=to_stdout)
+
     speaker1_name: str = gemini_cfg.get("speaker1", {}).get("name", "Alex")
     speaker2_name: str = gemini_cfg.get("speaker2", {}).get("name", "Jordan")
 
@@ -622,7 +686,7 @@ def run(
     # ------------------------------------------------------------------
     # 2. Scrape → Research → Dialogue → TTS
     # ------------------------------------------------------------------
-    with _make_progress(disable=no_progress) as progress:
+    with _make_progress(disable=no_progress or to_stdout) as progress:
 
         # 2a. Collect all sources (URLs, local files, search queries)
         scraped_sources: list[Source] = []
@@ -742,9 +806,12 @@ def run(
                 progress=progress,
                 task_id=tts_task,
             )
-            progress.console.print(
-                f"  [dim]TTS done — {tracker.live_line()}[/dim]"
-            )
+            if to_stdout:
+                logger.info("TTS done — %s", tracker.live_line())
+            else:
+                progress.console.print(
+                    f"  [dim]TTS done — {tracker.live_line()}[/dim]"
+                )
 
     # ------------------------------------------------------------------
     # 3. Audio export (skipped when --no-audio)
@@ -757,14 +824,24 @@ def run(
     stem = _build_output_stem(identifiers)
     saved: Path | None = None
     if not no_audio:
-        filename = f"{stem}.{output_fmt}"
-        out_path = Path(output_dir) / filename
-
-        logger.info("Exporting audio to %s…", out_path)
-        saved = export_audio(pcm_chunks, out_path, fmt=output_fmt)
-        click.echo(f"Podcast saved to: {saved}")
+        if to_stdout:
+            data = encode_audio(pcm_chunks, fmt=output_fmt)
+            sys.stdout.buffer.write(data)
+            sys.stdout.buffer.flush()
+            logger.info(
+                "Wrote %d byte(s) of %s audio to stdout", len(data), output_fmt.upper()
+            )
+        else:
+            out_path, out_fmt = _resolve_output_path(
+                output_file, output_dir, stem, output_fmt
+            )
+            logger.info("Exporting audio to %s…", out_path)
+            saved = export_audio(pcm_chunks, out_path, fmt=out_fmt)
+            _status(f"Podcast saved to: {saved}")
     else:
-        click.echo("Skipping TTS synthesis and audio export (--no-audio).")
+        if output_file:
+            logger.warning("--output is ignored together with --no-audio.")
+        _status("Skipping TTS synthesis and audio export (--no-audio).")
 
     # ------------------------------------------------------------------
     # 4. Report folder
@@ -780,13 +857,13 @@ def run(
             audio_path=saved,
             token_summary=tracker.summary(),
         )
-        click.echo(f"Report folder saved to: {report_dir}")
+        _status(f"Report folder saved to: {report_dir}")
 
     # ------------------------------------------------------------------
     # 5. Token / cost summary
     # ------------------------------------------------------------------
-    click.echo()
-    click.echo(tracker.summary())
+    _status("")
+    _status(tracker.summary())
 
 
 # ---------------------------------------------------------------------------
