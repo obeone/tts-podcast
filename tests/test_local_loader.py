@@ -74,15 +74,22 @@ class TestLoadLocalFileHtml:
     """Tests for HTML file loading."""
 
     def test_html_calls_trafilatura_extract(self, tmp_path: Path) -> None:
-        """load_local_file passes raw HTML to trafilatura.extract."""
+        """load_local_file passes raw HTML to trafilatura.extract (plain pass)."""
         f = tmp_path / "page.html"
         html_content = "<html><body><p>Hello</p></body></html>"
         f.write_text(html_content, encoding="utf-8")
 
-        with patch("tts_podcast.local_loader.trafilatura.extract", return_value="Hello") as mock_extract:
+        # _read_html calls trafilatura.extract twice: once plain (no kwargs) for
+        # full_text, and once with include_links=True / output_format="markdown"
+        # to capture hrefs.  We return "" for the second call so it is a no-op.
+        def _fake_extract(raw, **kwargs):
+            if kwargs:
+                return ""
+            return "Hello"
+
+        with patch("tts_podcast.local_loader.trafilatura.extract", side_effect=_fake_extract):
             src = load_local_file(f)
 
-        mock_extract.assert_called_once_with(html_content)
         assert src.scraped_ok is True
         assert src.full_text == "Hello"
         assert src.kind == "file"
@@ -92,14 +99,17 @@ class TestLoadLocalFileHtml:
         f = tmp_path / "page.htm"
         f.write_text("<html><body><p>Content</p></body></html>", encoding="utf-8")
 
-        with patch("tts_podcast.local_loader.trafilatura.extract", return_value="Content"):
+        def _fake_extract(raw, **kwargs):
+            return "" if kwargs else "Content"
+
+        with patch("tts_podcast.local_loader.trafilatura.extract", side_effect=_fake_extract):
             src = load_local_file(f)
 
         assert src.scraped_ok is True
         assert src.full_text == "Content"
 
     def test_html_extract_returns_none_gives_failed_source(self, tmp_path: Path) -> None:
-        """When trafilatura.extract returns None, scraped_ok is False."""
+        """When trafilatura.extract returns None for plain text, scraped_ok is False."""
         f = tmp_path / "empty.html"
         f.write_text("<html></html>", encoding="utf-8")
 
@@ -107,6 +117,52 @@ class TestLoadLocalFileHtml:
             src = load_local_file(f)
 
         assert src.scraped_ok is False
+
+    def test_html_links_populated_from_markdown_pass(self, tmp_path: Path) -> None:
+        """load_local_file populates Source.links from the include_links markdown pass."""
+        f = tmp_path / "article.html"
+        f.write_text(
+            "<html><body><p>Body. "
+            '<a href="https://alpha.example/one">one</a> '
+            '<a href="https://beta.example/two">two</a>'
+            "</p></body></html>",
+            encoding="utf-8",
+        )
+
+        # Simulate trafilatura returning markdown with link syntax on the second call.
+        def _fake_extract(raw, **kwargs):
+            if kwargs.get("include_links"):
+                return "Body. [one](https://alpha.example/one) [two](https://beta.example/two)"
+            return "Body. one two"
+
+        with patch("tts_podcast.local_loader.trafilatura.extract", side_effect=_fake_extract):
+            src = load_local_file(f)
+
+        assert src.scraped_ok is True
+        assert "https://alpha.example/one" in src.links
+        assert "https://beta.example/two" in src.links
+        # full_text must stay clean — no markdown link syntax.
+        assert "](" not in src.full_text
+
+    def test_html_links_empty_when_markdown_pass_fails(self, tmp_path: Path) -> None:
+        """Source.links is empty when the include_links pass raises an exception."""
+        f = tmp_path / "page.html"
+        f.write_text("<html><body><p>Text</p></body></html>", encoding="utf-8")
+
+        call_count = 0
+
+        def _fake_extract(raw, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if kwargs.get("include_links"):
+                raise RuntimeError("trafilatura error")
+            return "Text"
+
+        with patch("tts_podcast.local_loader.trafilatura.extract", side_effect=_fake_extract):
+            src = load_local_file(f)
+
+        assert src.scraped_ok is True
+        assert src.links == []
 
 
 class TestLoadLocalFilePdf:
