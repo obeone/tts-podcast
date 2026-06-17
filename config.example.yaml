@@ -112,6 +112,24 @@ research:
   # Defaults to gemini.text_model when omitted.
   # model: gemini-3.5-flash
 
+# Link following (optional) — activated per run with --follow-links
+# [--follow-depth N]. When enabled, after the inputs are scraped/loaded the
+# tool discovers links inside them, keeps the ones that look like real content
+# (cheap URL heuristic), fetches them, and asks Gemini to judge each fetched
+# page's content against the main topic (core / supporting / irrelevant).
+# Kept pages feed BOTH the research stage and the dialogue. The traversal
+# recurses into kept pages up to --follow-depth hops (default 1).
+follow:
+  # Maximum number of links fetched per hop (keeps cost and runtime bounded).
+  max_links_per_level: 5
+  # Global cap on the cumulative number of links fetched across ALL hops.
+  # Bounds total cost independently of depth × max_links_per_level: once this
+  # many links have been fetched, the traversal stops.
+  max_links_total: 20
+  # Optional override of the model used for the content-relevance judgement.
+  # Defaults to gemini.text_model when omitted.
+  # model: gemini-2.5-flash
+
 scraping:
   # HTTP request timeout in seconds for article fetches
   timeout_seconds: 10

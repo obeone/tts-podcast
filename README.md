@@ -23,6 +23,7 @@ with Gemini's multi-speaker TTS — plus an optional folder of Markdown reports.
 | 📄 | **Local documents** | Include `.txt`, `.md`, `.html`, or `.pdf` files with `-f` — no network request. |
 | 🔍 | **Web-search queries** | Pass a natural-language topic with `-s`; the research stage investigates it via Google Search grounding. |
 | 🧠 | **Iterative research** | `--research N` runs *N* sequential grounded rounds, each drilling into the gaps the last one left. |
+| 🔗 | **Follow links** | `--follow-links` discovers and traverses interesting links inside the inputs (heuristic pre-filter + LLM relevance judge); kept pages feed research and dialogue. |
 | 🎭 | **Multi-voice TTS** | Two distinct Gemini voices with configurable personalities, scene, and delivery cues. |
 | 👥 | **Named voice duos** | Five built-in pairings (`contrast` default, `warm`, `explorer`, `journalist`, `debate`) — or define your own from all 30 prebuilt Gemini voices. |
 | 🎨 | **Style & angle control** | Presets, free-text style, per-episode angle, and per-speaker overlays — without touching the baseline voice acting. |
@@ -122,6 +123,9 @@ tts-podcast run -n -f paper.pdf
 # Web-search query — research auto-bumped to 1 if it's the only input
 tts-podcast run -n -s "agentic AI memory systems"
 
+# Follow interesting links found inside the inputs (2 hops deep)
+tts-podcast run -L --follow-depth 2 https://blog.example.com/article
+
 # Mixed: URL + local file + search query in one episode
 tts-podcast run -n https://blog.example.com/article -f notes.md -s "follow-up topic"
 
@@ -162,6 +166,8 @@ tts-podcast run --duo debate --preset debate https://blog.example.com/article
 | `-f, --file FILE` | Local document to include (repeatable). `.txt`, `.md`, `.html`, `.pdf`. |
 | `-s, --search QUERY` | Web-search query to seed the podcast (repeatable). Auto-bumps research to 1 if search-only. |
 | `-R, --research N` | Number of Google-Search-grounded research rounds (default `0`). |
+| `-L, --follow-links` | After scraping inputs, follow interesting links inside them (heuristic pre-filter + LLM relevance judge). Fetched pages feed research and dialogue. |
+| `--follow-depth N` | Link-following hops when `--follow-links` is set (default `1`). |
 | `--duo NAME` | Named voice duo (`contrast`, `warm`, `explorer`, `journalist`, `debate`). |
 | `--preset NAME` | Style preset: `casual`, `academic`, `humorous`, `debate`, `vulgarized`, or `none`. |
 | `--style TEXT` | Free-text style guidance (≤ 500 chars). Composes with `--preset`. |
