@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from google import genai
 from google.genai import types
 
+from tts_podcast.link_extractor import relevance_label
 from tts_podcast.retry import gemini_retry
 from tts_podcast.style_presets import truncate_with_warning, validate_preset
 
@@ -493,7 +494,16 @@ def _build_prompt(
         else:
             text = getattr(article, "full_text", "") or getattr(article, "summary", "")
             url = getattr(article, "url", "")
-            block = f"[{i}] {title}\nURL: {url}\n{text}"
+            # Surface the link-following verdict so the model knows this is a
+            # followed core/supporting source vs a primary input. Gated on a
+            # non-None relevance: seed sources (relevance=None) render exactly
+            # as before, keeping the dialogue-prompt snapshot byte-identical.
+            relevance = getattr(article, "relevance", None)
+            if relevance is not None:
+                label = relevance_label(relevance)
+                block = f"[{i}] {title} [{label}]\nURL: {url}\n{text}"
+            else:
+                block = f"[{i}] {title}\nURL: {url}\n{text}"
         article_blocks.append(block)
 
     articles_text = "\n\n".join(article_blocks)

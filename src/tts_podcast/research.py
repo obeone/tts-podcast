@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from google import genai
 from google.genai import types
 
+from tts_podcast.link_extractor import relevance_label
 from tts_podcast.retry import gemini_retry
 from tts_podcast.style_presets import truncate_with_warning
 
@@ -172,7 +173,16 @@ def _format_articles(sources: list[Source]) -> str:
             blocks.append(f"[{i}] Topic to investigate: {src.title}")
         else:
             body = src.full_text or src.summary or ""
-            blocks.append(f"[{i}] {src.title}\nURL: {src.url}\n{body}")
+            # Tag followed sources with their link-following verdict so the
+            # research model can tell a followed core/supporting page from a
+            # primary input. Gated on non-None relevance: primary inputs
+            # (relevance=None) render unchanged.
+            relevance = getattr(src, "relevance", None)
+            if relevance is not None:
+                label = relevance_label(relevance)
+                blocks.append(f"[{i}] {src.title} [{label}]\nURL: {src.url}\n{body}")
+            else:
+                blocks.append(f"[{i}] {src.title}\nURL: {src.url}\n{body}")
     return "\n\n".join(blocks)
 
 
