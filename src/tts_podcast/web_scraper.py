@@ -14,12 +14,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+import re
+
 import trafilatura
 from trafilatura.settings import use_config
 
 from tts_podcast import cloak_fetcher
+from tts_podcast.link_extractor import extract_links_from_text
 from tts_podcast.models import Source
 from tts_podcast.user_agent import BROWSER_USER_AGENT
+
+# Regex for absolute http(s) links inside markdown: captures the target of
+# [text](https://...) syntax, which trafilatura emits when include_links=True.
+_MD_LINK_RE = re.compile(r"\]\((https?://[^)\s]+)\)")
 
 if TYPE_CHECKING:
     from rich.progress import Progress
@@ -86,6 +93,33 @@ def _extract_from_html(url: str, downloaded: str) -> Source:
     if not text:
         return Source(url=url, title=title)
 
+    # Capture article-body links at scrape time.  Plain-text extraction drops
+    # all hyperlinks, so the link-following stage would find 0 candidates from
+    # full_text.  We run a second trafilatura pass with include_links=True and
+    # output_format="markdown" which scopes links to the article body (excluding
+    # nav/footer junk) and emits them as [text](url) syntax.  We parse those
+    # markdown targets plus any bare URLs that extract_links_from_text picks up,
+    # deduplicate preserving order, and store the result on Source.links.
+    # full_text stays clean plain text — never polluted with markdown syntax.
+    links: list[str] = []
+    try:
+        links_md = trafilatura.extract(downloaded, include_links=True, output_format="markdown") or ""
+    except Exception:  # noqa: BLE001
+        links_md = ""
+    if links_md:
+        seen_links: set[str] = set()
+        # Collect markdown link targets first (most reliable for href preservation).
+        for m in _MD_LINK_RE.finditer(links_md):
+            href = m.group(1)
+            if href not in seen_links:
+                seen_links.add(href)
+                links.append(href)
+        # Also union with bare URLs found in the markdown text.
+        for href in extract_links_from_text(links_md):
+            if href not in seen_links:
+                seen_links.add(href)
+                links.append(href)
+
     summary = text[:_SUMMARY_CHARS].strip()
     return Source(
         url=url,
@@ -93,6 +127,7 @@ def _extract_from_html(url: str, downloaded: str) -> Source:
         summary=summary,
         full_text=text,
         scraped_ok=True,
+        links=links,
     )
 
 
