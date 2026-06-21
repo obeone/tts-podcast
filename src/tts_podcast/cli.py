@@ -39,6 +39,7 @@ from rich.syntax import Syntax
 from tts_podcast.audio_exporter import encode_audio, export_audio
 from tts_podcast.config import ConfigError, load_config
 from tts_podcast.duos import BUILTIN_DUOS, DEFAULT_DUO, describe_duos, resolve_duo
+from tts_podcast import link_follower
 from tts_podcast.link_extractor import extract_links
 from tts_podcast.llm_summarizer import generate_dialogue
 from tts_podcast.local_loader import load_local_files
@@ -493,6 +494,28 @@ def cli() -> None:
         "Steers the dialogue prompt and the first research round only."
     ),
 )
+@click.option(
+    "-L", "--follow-links",
+    "follow_links",
+    is_flag=True,
+    default=False,
+    help=(
+        "After scraping inputs, discover and follow interesting links found "
+        "inside them (heuristic pre-filter + LLM content-relevance judgement). "
+        "Fetched pages feed both research and dialogue."
+    ),
+)
+@click.option(
+    "--follow-depth",
+    "follow_depth",
+    type=int,
+    default=None,
+    help=(
+        "How many link-following hops to perform when --follow-links is set "
+        "(default 1). Each hop re-extracts links from the pages kept in the "
+        "previous hop."
+    ),
+)
 def run(
     inputs: tuple[str, ...],
     files: tuple[Path, ...],
@@ -513,6 +536,8 @@ def run(
     speaker1_style: str | None,
     speaker2_style: str | None,
     angle: str | None,
+    follow_links: bool,
+    follow_depth: int | None,
 ) -> None:
     """Fetch URLs, local files, or web search queries and generate a two-voice podcast MP3."""
     load_dotenv()
@@ -631,6 +656,25 @@ def run(
         gemini_research_cfg["model"] = research_cfg["model"]
     gemini_cfg = {**gemini_cfg, "research": gemini_research_cfg}
 
+    # Resolve link-following: validate the depth, then thread the follow model
+    # through gemini_cfg so link_follower._judge_sources can read it. A bare
+    # --follow-depth without --follow-links is a no-op (warn, don't error).
+    if follow_depth is not None and follow_depth < 1:
+        click.echo(
+            f"[ERROR] --follow-depth must be a positive integer (got {follow_depth}).",
+            err=True,
+        )
+        sys.exit(1)
+    follow_depth_resolved = follow_depth if follow_depth is not None else 1
+    if follow_depth is not None and not follow_links:
+        logger.warning("--follow-depth is ignored without --follow-links.")
+
+    follow_cfg = cfg.get("follow", {}) or {}
+    max_links_per_level = int(follow_cfg.get("max_links_per_level", 5))
+    max_links_total = int(follow_cfg.get("max_links_total", 20))
+    if follow_cfg.get("model"):
+        gemini_cfg = {**gemini_cfg, "follow": {"model": follow_cfg.get("model")}}
+
     # CLI --duration overrides gemini.dialogue.target_duration_minutes.
     if target_duration is not None:
         if target_duration <= 0:
@@ -732,6 +776,36 @@ def run(
                 "Input failed for %d/%d source(s); continuing with the rest. Failed: %s",
                 len(failed), len(all_sources), ", ".join(failed),
             )
+
+        # 2a-bis. Optional link following (runs before research and link
+        # extraction so the kept pages flow into BOTH the research stage and
+        # the dialogue). Two-stage: heuristic URL pre-filter, then an LLM
+        # content-relevance judgement on the fetched pages.
+        if follow_links:
+            follow_task = progress.add_task(
+                f"[cyan]Following links[/cyan] (depth {follow_depth_resolved})…",
+                total=follow_depth_resolved,
+            )
+            followed = link_follower.follow_links(
+                ok_sources,
+                depth=follow_depth_resolved,
+                gemini_cfg=gemini_cfg,
+                scrape_timeout=scrape_timeout,
+                user_agent=web_user_agent,
+                cloak_fallback=cloak_fallback,
+                token_tracker=tracker,
+                max_links_per_level=max_links_per_level,
+                max_links_total=max_links_total,
+                progress=progress,
+                task_id=follow_task,
+            )
+            if followed:
+                ok_sources = ok_sources + followed
+                all_sources = all_sources + followed
+                logger.info(
+                    "Followed %d additional source(s) via --follow-links.",
+                    len(followed),
+                )
 
         # 2b. Optional iterative research
         research_report = None

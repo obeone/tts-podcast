@@ -23,6 +23,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from tts_podcast.link_extractor import relevance_label
+
 if TYPE_CHECKING:
     from tts_podcast.link_extractor import CategorisedLink, LinkReport
     from tts_podcast.llm_summarizer import DialogueChunk
@@ -138,6 +140,13 @@ def _render_sources(sources: list[Source]) -> str:
             continue
         lines.append(f"## {title}\n")
         lines.append(f"**URL:** <{source.url}>\n")
+        # Surface the link-following verdict for followed pages. Gated on a
+        # non-None relevance so primary/seed sources render unchanged.
+        relevance = getattr(source, "relevance", None)
+        if relevance is not None:
+            label = relevance_label(relevance)
+            if label:
+                lines.append(f"**Relevance:** {label}\n")
         if not source.scraped_ok:
             lines.append("*Input failed — no content extracted.*\n")
             continue

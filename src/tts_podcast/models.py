@@ -36,6 +36,24 @@ class Source:
         Input kind — one of ``"url"`` (default, fetched from the web),
         ``"file"`` (read from a local file path), or ``"search"`` (a
         natural-language query to be investigated via web research).
+    relevance : str or None
+        Content-relevance verdict assigned by the link-following stage
+        (:mod:`tts_podcast.link_follower`).  ``"core"`` for pages strongly
+        on-topic with the seed subject, ``"supporting"`` for useful
+        complementary sources, and ``None`` for primary/seed inputs that
+        were never judged (URLs, files, search queries, and the seeds
+        themselves).  Stored on the source so the verdict can be reused
+        across the research and dialogue stages.
+    links : list[str]
+        Outbound hyperlink targets found in the article body (absolute
+        http(s) URLs), preserved at scrape time.  Populated by
+        :func:`~tts_podcast.web_scraper._extract_from_html` (and the HTML
+        path in :mod:`tts_podcast.local_loader`) via trafilatura's
+        ``include_links=True`` markdown extraction, because plain-text
+        extraction drops all hyperlinks.  Empty for sources whose reader
+        does not capture links (txt, md, pdf, search synthetics).
+        Consumed by the link-following stage
+        (:func:`~tts_podcast.link_follower._gather_candidates`).
     """
 
     url: str
@@ -44,3 +62,5 @@ class Source:
     full_text: str = field(default="")
     scraped_ok: bool = field(default=False)
     kind: str = field(default="url")
+    relevance: str | None = field(default=None)
+    links: list[str] = field(default_factory=list)

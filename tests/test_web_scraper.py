@@ -47,7 +47,12 @@ class TestScrapeUrl:
         assert args == ("https://example.com/article",)
         assert kwargs["no_ssl"] is True
         assert kwargs["config"].get("DEFAULT", "USER_AGENTS") == _BROWSER_USER_AGENT
-        mock_extract.assert_called_once_with("<html>")
+        # extract is now called twice: once plain (for full_text) and once with
+        # include_links=True / output_format="markdown" (for Source.links).
+        assert mock_extract.call_count == 2
+        first_call_args, first_call_kwargs = mock_extract.call_args_list[0]
+        assert first_call_args == ("<html>",)
+        assert first_call_kwargs == {}
 
     def test_falls_back_to_url_title_when_metadata_missing(self) -> None:
         """scrape_url uses a URL-derived title when extract_metadata returns no title."""
@@ -262,3 +267,82 @@ class TestScrapeUrls:
 
         _, kwargs = mock_scrape.call_args
         assert kwargs["use_cloak_fallback"] is True
+
+
+# ---------------------------------------------------------------------------
+# Source.links population tests
+# ---------------------------------------------------------------------------
+
+
+class TestSourceLinksPopulation:
+    """_extract_from_html populates Source.links from the include_links markdown pass."""
+
+    def test_links_extracted_from_html_article_body(self) -> None:
+        """Links found in the article body are stored in Source.links."""
+        html = (
+            "<html><body>"
+            "<p>Article text. "
+            '<a href="https://alpha.example/one">one</a> '
+            '<a href="https://beta.example/two">two</a>'
+            "</p></body></html>"
+        )
+
+        def _fake_extract(downloaded, **kwargs):
+            if kwargs.get("include_links"):
+                return (
+                    "Article text. "
+                    "[one](https://alpha.example/one) "
+                    "[two](https://beta.example/two)"
+                )
+            return "Article text. one two"
+
+        meta = SimpleNamespace(title="Test Article")
+        with (
+            patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=html),
+            patch("tts_podcast.web_scraper.trafilatura.extract", side_effect=_fake_extract),
+            patch("tts_podcast.web_scraper.trafilatura.extract_metadata", return_value=meta),
+        ):
+            src = scrape_url("https://example.com/article")
+
+        assert src.scraped_ok is True
+        assert "https://alpha.example/one" in src.links
+        assert "https://beta.example/two" in src.links
+
+    def test_full_text_stays_clean_no_markdown_syntax(self) -> None:
+        """full_text must not contain markdown link syntax even when links are captured."""
+        html = "<html><body><p>Body. <a href='https://x.example/y'>link</a></p></body></html>"
+
+        def _fake_extract(downloaded, **kwargs):
+            if kwargs.get("include_links"):
+                return "Body. [link](https://x.example/y)"
+            return "Body. link"
+
+        with (
+            patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=html),
+            patch("tts_podcast.web_scraper.trafilatura.extract", side_effect=_fake_extract),
+            patch("tts_podcast.web_scraper.trafilatura.extract_metadata", return_value=None),
+        ):
+            src = scrape_url("https://example.com/article")
+
+        assert src.scraped_ok is True
+        assert "](" not in src.full_text
+
+    def test_links_empty_when_no_hrefs_in_article(self) -> None:
+        """Source.links is empty when the markdown pass finds no links."""
+        with (
+            patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value="<html>"),
+            patch("tts_podcast.web_scraper.trafilatura.extract", return_value="Plain body text"),
+            patch("tts_podcast.web_scraper.trafilatura.extract_metadata", return_value=None),
+        ):
+            src = scrape_url("https://example.com/article")
+
+        assert src.scraped_ok is True
+        assert src.links == []
+
+    def test_links_empty_on_failed_scrape(self) -> None:
+        """A failed scrape (no content) still produces an empty Source.links."""
+        with patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=None):
+            src = scrape_url("https://example.com/article")
+
+        assert src.scraped_ok is False
+        assert src.links == []
