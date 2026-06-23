@@ -379,3 +379,226 @@ class TestOutputFile:
         assert mock_encode.called, "stdout mode must encode in memory"
         assert not mock_export.called, "stdout mode must not write a file"
         assert b"BINARYAUDIO" in result.stdout_bytes
+
+
+# ---------------------------------------------------------------------------
+# --duo auto path
+# ---------------------------------------------------------------------------
+
+def _make_generated_duo(s1_name: str = "Mira", s2_name: str = "Ravi") -> dict:
+    """
+    Build a minimal dict that ``generate_duo`` would return.
+
+    Uses the first two voices from GEMINI_VOICES so the names are valid.
+    """
+    from tts_podcast.duos import GEMINI_VOICES
+
+    voices = list(GEMINI_VOICES)
+    return {
+        "description": "A thoughtful duo for the content.",
+        "speaker1": {
+            "name": s1_name,
+            "voice": voices[0],
+            "personality": "calm and analytical",
+        },
+        "speaker2": {
+            "name": s2_name,
+            "voice": voices[1],
+            "personality": "warm and curious",
+        },
+    }
+
+
+class TestDuoAuto:
+    """
+    ``--duo auto`` defers duo generation until after scraping + research
+    and injects into ``gemini_cfg`` at the single injection point.
+    """
+
+    def _base_patches(self):
+        """Shared mocks for the standard run pipeline (no audio write)."""
+        return (
+            patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]),
+            patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()),
+            patch("tts_podcast.cli.generate_dialogue", return_value=[]),
+            patch("tts_podcast.cli.generate_audio_chunks", return_value=[]),
+        )
+
+    def test_generate_duo_called_when_auto(self, cli_env):
+        """``generate_duo`` must be invoked exactly once when ``--duo auto`` is passed."""
+        runner, config_path = cli_env
+        scrape, research, dialogue, tts = self._base_patches()
+        with scrape, research, dialogue, tts, \
+             patch(
+                 "tts_podcast.cli.generate_duo",
+                 return_value=_make_generated_duo(),
+             ) as mock_gen_duo:
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "-c", str(config_path),
+                    "-A",
+                    "-n",
+                    "--duo", "auto",
+                    "https://example.com/article",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert mock_gen_duo.called, "generate_duo must be called in auto mode"
+        assert mock_gen_duo.call_count == 1
+
+    def test_generate_duo_not_called_for_named_duo(self, cli_env):
+        """In non-auto mode ``generate_duo`` must never be called."""
+        runner, config_path = cli_env
+        scrape, research, dialogue, tts = self._base_patches()
+        with scrape, research, dialogue, tts, \
+             patch("tts_podcast.cli.generate_duo") as mock_gen_duo:
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "-c", str(config_path),
+                    "-A",
+                    "-n",
+                    "--duo", "warm",
+                    "https://example.com/article",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert not mock_gen_duo.called, "generate_duo must not be called for named duo"
+
+    def test_generate_duo_not_called_without_duo_flag(self, cli_env):
+        """Without any ``--duo`` flag, ``generate_duo`` must not be called."""
+        runner, config_path = cli_env
+        scrape, research, dialogue, tts = self._base_patches()
+        with scrape, research, dialogue, tts, \
+             patch("tts_podcast.cli.generate_duo") as mock_gen_duo:
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "-c", str(config_path),
+                    "-A",
+                    "-n",
+                    "https://example.com/article",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert not mock_gen_duo.called
+
+    def test_speaker_names_recalculated_from_generated_duo(self, cli_env):
+        """
+        After ``generate_duo`` injects names, ``generate_dialogue`` receives
+        the generated speaker names, not the config defaults.
+        """
+        runner, config_path = cli_env
+        captured: dict = {}
+
+        generated = _make_generated_duo(s1_name="Mira", s2_name="Ravi")
+
+        def _capture_dialogue(_articles, gemini_cfg, speaker1_name, speaker2_name, **_kw):
+            captured["s1"] = speaker1_name
+            captured["s2"] = speaker2_name
+            return []
+
+        scrape, research, dialogue, tts = self._base_patches()
+        with scrape, research, \
+             patch("tts_podcast.cli.generate_dialogue", side_effect=_capture_dialogue), \
+             tts, \
+             patch("tts_podcast.cli.generate_duo", return_value=generated):
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "-c", str(config_path),
+                    "-A",
+                    "-n",
+                    "--duo", "auto",
+                    "https://example.com/article",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert captured["s1"] == "Mira"
+        assert captured["s2"] == "Ravi"
+
+    def test_auto_duo_injects_into_gemini_cfg_speaker_blocks(self, cli_env):
+        """
+        ``generate_duo``'s result is written into ``gemini_cfg["speaker1/2"]``
+        (the single injection point), so ``generate_dialogue`` sees the new voices.
+        """
+        runner, config_path = cli_env
+        captured: dict = {}
+
+        generated = _make_generated_duo()
+
+        def _capture_dialogue(_articles, gemini_cfg, *_args, **_kw):
+            captured["voice1"] = gemini_cfg["speaker1"]["voice"]
+            captured["voice2"] = gemini_cfg["speaker2"]["voice"]
+            return []
+
+        scrape, research, _, tts = self._base_patches()
+        with scrape, research, \
+             patch("tts_podcast.cli.generate_dialogue", side_effect=_capture_dialogue), \
+             tts, \
+             patch("tts_podcast.cli.generate_duo", return_value=generated):
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "-c", str(config_path),
+                    "-A",
+                    "-n",
+                    "--duo", "auto",
+                    "https://example.com/article",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        from tts_podcast.duos import GEMINI_VOICES
+
+        assert captured["voice1"] in GEMINI_VOICES
+        assert captured["voice2"] in GEMINI_VOICES
+        # Voices must match what generate_duo returned.
+        assert captured["voice1"] == generated["speaker1"]["voice"]
+        assert captured["voice2"] == generated["speaker2"]["voice"]
+
+    def test_auto_duo_does_not_mutate_personality(self, cli_env):
+        """
+        The personality strings from ``generate_duo`` reach ``generate_dialogue``
+        as-is via ``gemini_cfg``; the TTS preamble path reads ``personality``
+        verbatim and must never see a mutated value.
+        """
+        runner, config_path = cli_env
+        captured: dict = {}
+        generated = _make_generated_duo()
+        original_p1 = generated["speaker1"]["personality"]
+        original_p2 = generated["speaker2"]["personality"]
+
+        def _capture_dialogue(_articles, gemini_cfg, *_args, **_kw):
+            captured["p1"] = gemini_cfg["speaker1"]["personality"]
+            captured["p2"] = gemini_cfg["speaker2"]["personality"]
+            return []
+
+        scrape, research, _, tts = self._base_patches()
+        with scrape, research, \
+             patch("tts_podcast.cli.generate_dialogue", side_effect=_capture_dialogue), \
+             tts, \
+             patch("tts_podcast.cli.generate_duo", return_value=generated):
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "-c", str(config_path),
+                    "-A",
+                    "-n",
+                    "--duo", "auto",
+                    "https://example.com/article",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        # personality must be the verbatim string from the generated duo dict.
+        assert captured["p1"] == original_p1
+        assert captured["p2"] == original_p2
+        # The generated dict itself must not have been mutated.
+        assert generated["speaker1"]["personality"] == original_p1
+        assert generated["speaker2"]["personality"] == original_p2
