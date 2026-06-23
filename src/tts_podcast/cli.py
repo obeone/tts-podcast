@@ -38,7 +38,8 @@ from rich.syntax import Syntax
 
 from tts_podcast.audio_exporter import encode_audio, export_audio
 from tts_podcast.config import ConfigError, load_config
-from tts_podcast.duos import BUILTIN_DUOS, DEFAULT_DUO, describe_duos, resolve_duo
+from tts_podcast.duo_generator import generate_duo
+from tts_podcast.duos import BUILTIN_DUOS, DEFAULT_DUO, GEMINI_VOICES, describe_duos, resolve_duo
 from tts_podcast.link_extractor import extract_links
 from tts_podcast.llm_summarizer import generate_dialogue
 from tts_podcast.local_loader import load_local_files
@@ -64,41 +65,9 @@ def _xdg_config_home() -> Path:
 
 _DEFAULT_CONFIG = _xdg_config_home() / "tts-podcast" / "config.yaml"
 
-# The 30 prebuilt Gemini TTS voices, with their official one-word descriptor.
-# See https://ai.google.dev/gemini-api/docs/speech-generation for previews.
-# Google does not document gender; audition in AI Studio before committing.
-_GEMINI_VOICES = [
-    "Zephyr",       # Bright
-    "Puck",         # Upbeat
-    "Charon",       # Informative
-    "Kore",         # Firm
-    "Fenrir",       # Excitable
-    "Leda",         # Youthful
-    "Orus",         # Firm
-    "Aoede",        # Breezy
-    "Callirrhoe",   # Easy-going
-    "Autonoe",      # Bright
-    "Enceladus",    # Breathy
-    "Iapetus",      # Clear
-    "Umbriel",      # Easy-going
-    "Algieba",      # Smooth
-    "Despina",      # Smooth
-    "Erinome",      # Clear
-    "Algenib",      # Gravelly
-    "Rasalgethi",   # Informative
-    "Laomedeia",    # Upbeat
-    "Achernar",     # Soft
-    "Alnilam",      # Firm
-    "Schedar",      # Even
-    "Gacrux",       # Mature
-    "Pulcherrima",  # Forward
-    "Achird",       # Friendly
-    "Zubenelgenubi",# Casual
-    "Vindemiatrix", # Gentle
-    "Sadachbia",    # Lively
-    "Sadaltager",   # Knowledgeable
-    "Sulafat",      # Warm
-]
+# Derive the ordered voice list from the canonical GEMINI_VOICES table in
+# duos.py — that dict is the single source of truth for names + descriptors.
+_GEMINI_VOICES = list(GEMINI_VOICES)
 
 
 # ---------------------------------------------------------------------------
@@ -569,23 +538,30 @@ def run(
     # gemini_cfg["speaker1"/"speaker2"], so every downstream consumer (TTS
     # preamble, dialogue prompt, --speakerN-style overlays) is unchanged and
     # configs that only define legacy speaker1/speaker2 keep working as-is.
+    #
+    # Special case: --duo auto (or gemini.default_duo: auto) defers duo
+    # generation until after scraping + research so the model can read the
+    # actual content. The `auto_duo` flag signals this path; early resolution
+    # is skipped and generation happens in step 2b below.
     config_duos = gemini_cfg.get("duos")
     has_legacy_speakers = bool(gemini_cfg.get("speaker1")) and bool(gemini_cfg.get("speaker2"))
     duo_name = duo or gemini_cfg.get("default_duo")
     if duo_name is None and not has_legacy_speakers:
         duo_name = DEFAULT_DUO
-    try:
-        resolved_duo = resolve_duo(duo_name, config_duos)
-    except click.BadParameter as exc:
-        click.echo(f"[ERROR] {exc.format_message()}", err=True)
-        sys.exit(1)
-    if resolved_duo is not None:
-        gemini_cfg = {
-            **gemini_cfg,
-            "speaker1": resolved_duo["speaker1"],
-            "speaker2": resolved_duo["speaker2"],
-        }
-        logger.info("Using voice duo %r", duo_name)
+    auto_duo: bool = isinstance(duo_name, str) and duo_name.strip().lower() == "auto"
+    if not auto_duo:
+        try:
+            resolved_duo = resolve_duo(duo_name, config_duos)
+        except click.BadParameter as exc:
+            click.echo(f"[ERROR] {exc.format_message()}", err=True)
+            sys.exit(1)
+        if resolved_duo is not None:
+            gemini_cfg = {
+                **gemini_cfg,
+                "speaker1": resolved_duo["speaker1"],
+                "speaker2": resolved_duo["speaker2"],
+            }
+            logger.info("Using voice duo %r", duo_name)
 
     scrape_timeout: int = scraping_cfg.get("timeout_seconds", 10)
     cloak_fallback: bool = bool(scraping_cfg.get("cloak_fallback", False))
@@ -606,6 +582,8 @@ def run(
         """Emit a status line — on stderr when audio is streamed to stdout."""
         click.echo(message, err=to_stdout)
 
+    # For auto_duo, speaker names are set after generate_duo injects into gemini_cfg
+    # (step 2b). Use placeholders here; they are overwritten before generate_dialogue.
     speaker1_name: str = gemini_cfg.get("speaker1", {}).get("name", "Alex")
     speaker2_name: str = gemini_cfg.get("speaker2", {}).get("name", "Jordan")
 
@@ -762,6 +740,45 @@ def run(
         if report:
             link_report = extract_links(ok_sources)
 
+        # 2c-bis. Auto duo generation (deferred — needs real content signal).
+        # Runs after scraping + research so the model gets the full content
+        # and research notes. Injects into gemini_cfg at the single injection
+        # point, then recalculates speaker names before generate_dialogue.
+        generated_duo: dict | None = None
+        if auto_duo:
+            duo_task = progress.add_task("[cyan]Generating voice duo…[/cyan]", total=1)
+            language = gemini_cfg.get("language", "French")
+            research_notes_for_duo = research_report.combined_notes if research_report else ""
+            generated_duo = generate_duo(
+                ok_sources,
+                research_notes_for_duo,
+                gemini_cfg,
+                token_tracker=tracker,
+                language=language,
+            )
+            gemini_cfg = {
+                **gemini_cfg,
+                "speaker1": generated_duo["speaker1"],
+                "speaker2": generated_duo["speaker2"],
+            }
+            # Recalculate speaker names from the freshly injected duo.
+            speaker1_name = generated_duo["speaker1"]["name"]
+            speaker2_name = generated_duo["speaker2"]["name"]
+            progress.update(
+                duo_task,
+                description=(
+                    f"[cyan]Voice duo[/cyan]: {speaker1_name} ({generated_duo['speaker1']['voice']})"
+                    f" + {speaker2_name} ({generated_duo['speaker2']['voice']})"
+                ),
+                completed=1,
+            )
+            logger.info(
+                "Auto duo generated: %s (%s) + %s (%s) — %s",
+                speaker1_name, generated_duo["speaker1"]["voice"],
+                speaker2_name, generated_duo["speaker2"]["voice"],
+                generated_duo.get("description", ""),
+            )
+
         # 2d. Dialogue generation
         llm_task = progress.add_task("[cyan]Generating dialogue…[/cyan]", total=1)
         research_notes = research_report.combined_notes if research_report else ""
@@ -782,6 +799,18 @@ def run(
 
         if dry_run:
             progress.stop()
+            if generated_duo is not None:
+                click.echo("\n=== Generated Voice Duo ===\n")
+                click.echo(f"Description: {generated_duo.get('description', '')}")
+                s1 = generated_duo["speaker1"]
+                s2 = generated_duo["speaker2"]
+                click.echo(
+                    f"  {s1['name']} — voice: {s1['voice']}, personality: {s1['personality']}"
+                )
+                click.echo(
+                    f"  {s2['name']} — voice: {s2['voice']}, personality: {s2['personality']}"
+                )
+                click.echo()
             click.echo("\n=== Dialogue Preview ===\n")
             for chunk in chunks:
                 click.echo(chunk.text)
@@ -856,6 +885,7 @@ def run(
             research=research_report,
             audio_path=saved,
             token_summary=tracker.summary(),
+            duo=generated_duo,
         )
         _status(f"Report folder saved to: {report_dir}")
 
