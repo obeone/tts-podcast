@@ -15,6 +15,7 @@ venv/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+.worktrees/
 
 # Generated artifacts
 *.mp3
