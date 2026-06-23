@@ -105,6 +105,25 @@ gemini:
 legacy `gemini.speaker1` / `speaker2` blocks › built-in `contrast`. A config
 that defines only the legacy `speakerN` blocks keeps working unchanged.
 
+### Auto-generated duo (`--duo auto`)
+
+Pass `--duo auto` to let Gemini invent a duo tailored to the content itself.
+After scraping and research, the pipeline asks the model to pick two voices
+from the full 30-voice palette and write personalities that fit the topic,
+tone, and language of the episode.
+
+```bash
+tts-podcast run --duo auto https://blog.example.com/article
+```
+
+The model returns a structured JSON object (voice names validated against the
+enum of known voices), which is injected into `gemini.speaker1` / `speaker2`
+at the same single injection point as every other duo resolution — the rest
+of the pipeline sees it as a normal duo and behaves identically.
+
+Use `--report` to see the generated duo description in the report folder
+(`tts_<stem>/overview.md`).
+
 ---
 
 ## 🎚️ Usage
