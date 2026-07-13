@@ -21,7 +21,8 @@
 # compile against the wrong nvcc. Bump this in lockstep with the torch pin.
 # Ubuntu 22.04 is a comfort default; torch wheels are manylinux, so 24.04
 # works too. Override the whole base with --build-arg CUDA_IMAGE=...
-ARG CUDA_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+# Ubuntu 24.04 LTS: supported to 2029, and ships python3.12 natively (no PPA).
+ARG CUDA_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 
 FROM ${CUDA_IMAGE}
 
@@ -41,7 +42,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN rm -f /etc/apt/apt.conf.d/docker-clean; \
     echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
 
-# System dependencies:
+# System dependencies (python3.12 is the Ubuntu 24.04 system interpreter):
 #   - python3.12 + venv/dev: runtime and headers for building extensions
 #   - build-essential, ninja-build, git: compile flash-attn / clone the repo
 #   - ffmpeg, libsndfile1: audio I/O for the TTS pipeline
@@ -49,11 +50,9 @@ RUN rm -f /etc/apt/apt.conf.d/docker-clean; \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-        software-properties-common ca-certificates curl git \
+        ca-certificates curl git \
         build-essential ninja-build \
-        ffmpeg libsndfile1 && \
-    add-apt-repository -y ppa:deadsnakes/ppa && \
-    apt-get update && apt-get install -y --no-install-recommends \
+        ffmpeg libsndfile1 \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev
 
 # uv: the project's package manager. Faster resolver + install, and the
