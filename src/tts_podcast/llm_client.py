@@ -328,6 +328,11 @@ def complete(
     if enable_google_search:
         if gemini_route:
             kwargs["tools"] = [{"googleSearch": {}}]
+            # Opt out of LiteLLM's MCP-tool handler: whenever `tools` is set it
+            # eagerly imports litellm.responses.mcp.*, which transitively needs
+            # fastapi (the proxy extra we deliberately don't install).  We never
+            # pass MCP tools, so skipping that path keeps the base install lean.
+            kwargs["_skip_mcp_handler"] = True
         else:
             logger.warning(
                 "Google Search grounding requested but model %r is not a Gemini "
