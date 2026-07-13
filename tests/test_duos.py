@@ -176,7 +176,7 @@ def _run_capture_speakers(runner: CliRunner, config_path: Path, extra_args: list
     """Invoke `run` with mocked collaborators, capturing the resolved speakers."""
     captured: dict = {}
 
-    def _capture(_articles, gemini_cfg, sp1_name, sp2_name, *args, **kwargs):
+    def _capture(_articles, gemini_cfg, _llm_cfg, sp1_name, sp2_name, *args, **kwargs):
         captured["s1_name"] = sp1_name
         captured["s2_name"] = sp2_name
         captured["s1_voice"] = gemini_cfg["speaker1"]["voice"]

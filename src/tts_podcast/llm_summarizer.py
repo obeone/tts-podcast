@@ -16,14 +16,12 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from google import genai
-from google.genai import types
-
-from tts_podcast.retry import gemini_retry
+from tts_podcast.llm_client import build_model_string, complete
 from tts_podcast.style_presets import truncate_with_warning, validate_preset
 
 if TYPE_CHECKING:
     from rich.progress import Progress
+    from tts_podcast.settings import LlmSettings
     from tts_podcast.token_tracker import TokenTracker
 
 logger = logging.getLogger(__name__)
@@ -177,75 +175,51 @@ def _audio_tags_enabled(gemini_cfg: dict) -> bool:
     return tts_model.startswith("gemini-3")
 
 
-def _build_thinking_config(
-    model: str,
-    thinking_level: str | None,
-    thinking_budget: int | None,
-) -> types.ThinkingConfig | None:
+def _reasoning_effort(dialogue_cfg: dict) -> str | None:
     """
-    Return a ``types.ThinkingConfig`` for the model family, or ``None``.
+    Map the dialogue "thinking" config to LiteLLM's provider-agnostic effort.
 
-    Gemini 3.x models use ``thinking_level`` (a string enum); Gemini 2.5 and
-    other models use ``thinking_budget`` (an integer).  Passing the wrong field
-    for a model family is silently ignored with a warning so callers can set
-    both in config without errors.
+    LiteLLM exposes a single ``reasoning_effort`` knob
+    (``minimal | low | medium | high``) that it translates to each provider's
+    native control (Gemini thinking budget/level, OpenAI reasoning effort, …).
+    We fold the two legacy Gemini-specific keys onto it:
+
+    - ``thinking_level`` (``minimal | low | medium | high``) maps 1:1.
+    - ``thinking_budget`` (an int, Gemini 2.5 style) is coarsely translated:
+      ``0`` → ``"minimal"`` (thinking effectively off), anything else → ``"low"``.
+      Prefer ``thinking_level`` in new configs; the budget path is kept only for
+      back-compat.
 
     Parameters
     ----------
-    model : str
-        The Gemini model name (e.g. ``"gemini-3.5-flash"``).
-    thinking_level : str or None
-        Desired thinking level for Gemini 3.x models.  Accepted values
-        (case-insensitive): ``"minimal"``, ``"low"``, ``"medium"``,
-        ``"high"``.  ``None`` or empty string means "not set".
-    thinking_budget : int or None
-        Thinking token budget for Gemini 2.5 / other models.  ``0`` disables
-        thinking; ``-1`` means dynamic.  ``None`` means "not set".
+    dialogue_cfg : dict
+        The ``gemini.dialogue`` config sub-section.
 
     Returns
     -------
-    types.ThinkingConfig or None
-        A configured ``ThinkingConfig`` instance, or ``None`` when no
-        configuration applies (not set, wrong family, or invalid value).
+    str or None
+        A valid ``reasoning_effort`` string, or ``None`` when neither key is set
+        (let the provider use its default).
     """
-    is_3x = str(model).startswith("gemini-3")
+    level = dialogue_cfg.get("thinking_level")
+    if level is not None and str(level).strip():
+        normalised = str(level).strip().lower()
+        if normalised in _THINKING_LEVEL_VALID:
+            return normalised
+        logger.warning(
+            "Invalid thinking_level %r — must be one of %s. Ignoring.",
+            level,
+            sorted(_THINKING_LEVEL_VALID),
+        )
 
-    # Normalise: treat empty string as "not set"
-    level_normalised: str | None = None
-    if thinking_level is not None and str(thinking_level).strip():
-        level_normalised = str(thinking_level).strip().lower()
+    budget = dialogue_cfg.get("thinking_budget")
+    if budget is not None:
+        try:
+            return "minimal" if int(budget) == 0 else "low"
+        except (TypeError, ValueError):
+            logger.warning("Invalid thinking_budget %r — ignoring.", budget)
 
-    budget_set = thinking_budget is not None
-
-    if is_3x:
-        if level_normalised is not None:
-            if level_normalised not in _THINKING_LEVEL_VALID:
-                logger.warning(
-                    "Invalid thinking_level %r for model %r — must be one of %s. "
-                    "Ignoring.",
-                    thinking_level,
-                    model,
-                    sorted(_THINKING_LEVEL_VALID),
-                )
-                return None
-            return types.ThinkingConfig(thinking_level=level_normalised)
-        if budget_set:
-            logger.warning(
-                "thinking_budget is ignored for Gemini 3.x model %r — "
-                "use thinking_level (minimal|low|medium|high) instead.",
-                model,
-            )
-        return None
-    else:
-        if budget_set:
-            return types.ThinkingConfig(thinking_budget=int(thinking_budget))
-        if level_normalised is not None:
-            logger.warning(
-                "thinking_level is ignored for non-3.x model %r — "
-                "use thinking_budget (int tokens) instead.",
-                model,
-            )
-        return None
+    return None
 
 
 def _has_speaker_turns(
@@ -671,6 +645,7 @@ class DialogueChunk:
 def generate_dialogue(
     articles: list,
     gemini_cfg: dict,
+    llm_cfg: LlmSettings,
     speaker1_name: str,
     speaker2_name: str,
     token_tracker: TokenTracker | None = None,
@@ -681,8 +656,9 @@ def generate_dialogue(
     """
     Generate a two-host podcast dialogue from a list of articles.
 
-    Sends all articles to Gemini and parses the resulting dialogue into
-    byte-bounded :class:`DialogueChunk` objects suitable for TTS.
+    Sends all articles to the configured LLM (via :mod:`tts_podcast.llm_client`)
+    and parses the resulting dialogue into byte-bounded :class:`DialogueChunk`
+    objects suitable for TTS.
 
     Parameters
     ----------
@@ -690,10 +666,15 @@ def generate_dialogue(
         A list of article-like objects with ``title``, ``url``, and
         ``full_text`` / ``summary`` attributes.
     gemini_cfg : dict
-        Resolved Gemini configuration section from the YAML config, containing
-        at minimum ``api_key`` and ``text_model`` keys.  Optional keys:
-        ``speaker1.personality``, ``speaker2.personality``, ``language``
-        (default ``"French"``), and ``dialogue`` sub-section.
+        Resolved configuration section carrying the *dialogue-shaping* fields:
+        ``speaker1``/``speaker2`` (name + personality + optional
+        ``style_overlay``), ``language`` (default ``"French"``), ``style``, and
+        the ``dialogue`` sub-section (duration, wpm, thinking).  Authentication
+        and model selection come from *llm_cfg*, not from here.
+    llm_cfg : LlmSettings
+        Resolved provider-agnostic LLM settings (provider, ``text_model``,
+        ``api_key``, ``api_base``, ``temperature``, ``extra_headers``).  Selects
+        which model writes the dialogue.
     speaker1_name : str
         Display name of the first podcast host (used in the prompt and as a
         speaker-turn boundary marker).
@@ -748,11 +729,7 @@ def generate_dialogue(
         dialogue_cfg.get("max_duration_minutes", round(target_minutes * 1.5, 1))
     )
 
-    thinking_level = dialogue_cfg.get("thinking_level")
-    thinking_budget = dialogue_cfg.get("thinking_budget")
-    thinking_cfg = _build_thinking_config(
-        gemini_cfg["text_model"], thinking_level, thinking_budget
-    )
+    reasoning_effort = _reasoning_effort(dialogue_cfg)
 
     audio_tags = _audio_tags_enabled(gemini_cfg)
     if audio_tags:
@@ -778,42 +755,36 @@ def generate_dialogue(
         angle=angle,
     )
 
+    model_string = build_model_string(llm_cfg.provider, llm_cfg.text_model)
     logger.info(
-        "Sending %d article(s) to Gemini model '%s'%s.",
+        "Sending %d article(s) to model '%s'%s.",
         len(articles),
-        gemini_cfg["text_model"],
+        model_string,
         " with research notes" if research_notes.strip() else "",
     )
     logger.debug("Dialogue prompt (%d chars):\n%s", len(prompt), prompt)
 
-    client = genai.Client(api_key=gemini_cfg["api_key"])
-    service_tier = gemini_cfg.get("service_tier")
-
-    config_kwargs: dict[str, Any] = {"max_output_tokens": 8192}
-    if service_tier:
-        config_kwargs["http_options"] = types.HttpOptions(
-            headers={"x-goog-api-service-tier": service_tier},
-        )
-    if thinking_cfg is not None:
-        config_kwargs["thinking_config"] = thinking_cfg
-
-    @gemini_retry
-    def _call_api():
-        return client.models.generate_content(
-            model=gemini_cfg["text_model"],
-            contents=prompt,
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
-
     dialogue_text: str = ""
     ok = False
     for attempt in range(1, _DIALOGUE_MAX_ATTEMPTS + 1):
-        response = _call_api()
+        result = complete(
+            model=model_string,
+            prompt=prompt,
+            api_key=llm_cfg.api_key,
+            api_base=llm_cfg.api_base,
+            temperature=llm_cfg.temperature,
+            max_tokens=8192,
+            reasoning_effort=reasoning_effort,
+            extra_headers=llm_cfg.extra_headers,
+        )
 
         if token_tracker is not None:
-            token_tracker.record_usage(gemini_cfg["text_model"], response.usage_metadata)
+            # Record under the bare model name so `pricing:` keys keep matching.
+            token_tracker.record(
+                llm_cfg.text_model, result.input_tokens, result.output_tokens
+            )
 
-        dialogue_text = response.text or ""
+        dialogue_text = result.text or ""
         ok = bool(dialogue_text) and _has_speaker_turns(
             dialogue_text, speaker1_name, speaker2_name
         )

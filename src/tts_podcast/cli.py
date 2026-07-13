@@ -46,6 +46,7 @@ from tts_podcast.local_loader import load_local_files
 from tts_podcast.models import Source
 from tts_podcast.report_generator import generate_report
 from tts_podcast.research import conduct_research
+from tts_podcast.settings import resolve_llm_settings
 from tts_podcast.style_presets import STYLE_PRESETS
 from tts_podcast.token_tracker import TokenTracker
 from tts_podcast.tts_generator import generate_audio_chunks
@@ -593,6 +594,18 @@ def run(
     if service_tier:
         logger.info("Gemini service tier: %s", service_tier)
 
+    # Resolve the provider-agnostic LLM settings (new `llm:` section, or
+    # synthesised from the legacy `gemini:` block).  These drive every text
+    # call (dialogue, research, duo); the Gemini-TTS backend keeps its own
+    # key/model under `gemini:` so text and speech can use different providers.
+    llm_cfg = resolve_llm_settings(cfg)
+    logger.info(
+        "LLM provider: %s · text model: %s%s",
+        llm_cfg.provider,
+        llm_cfg.text_model,
+        f" · research model: {llm_cfg.research_model}" if llm_cfg.research_model else "",
+    )
+
     # Resolve research rounds: CLI > config > 0.
     if research_rounds is None:
         research_rounds = int(research_cfg.get("rounds_default", 0))
@@ -722,6 +735,7 @@ def run(
                 ok_sources,
                 rounds=research_rounds,
                 gemini_cfg=gemini_cfg,
+                llm_cfg=llm_cfg,
                 token_tracker=tracker,
                 progress=progress,
                 task_id=research_task,
@@ -753,6 +767,7 @@ def run(
                 ok_sources,
                 research_notes_for_duo,
                 gemini_cfg,
+                llm_cfg,
                 token_tracker=tracker,
                 language=language,
             )
@@ -785,6 +800,7 @@ def run(
         chunks = generate_dialogue(
             ok_sources,
             gemini_cfg,
+            llm_cfg,
             speaker1_name,
             speaker2_name,
             token_tracker=tracker,

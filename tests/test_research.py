@@ -8,26 +8,36 @@ prior rounds into subsequent prompts.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from tts_podcast.llm_client import Grounding, LlmResult
 from tts_podcast.models import Source
 from tts_podcast.research import (
     Citation,
     ResearchReport,
     _build_combined_notes,
-    _extract_citations,
     conduct_research,
 )
+from tts_podcast.settings import LlmSettings
 
 
 GEMINI_CFG = {
-    "api_key": "test-key",
-    "text_model": "gemini-2.5-flash",
     "language": "French",
 }
+
+LLM_SETTINGS = LlmSettings(
+    provider="gemini",
+    text_model="gemini-2.5-flash",
+    research_model=None,
+    api_key="test-key",
+    api_base=None,
+    temperature=None,
+    extra_headers=None,
+)
 
 SAMPLE_SOURCES = [
     Source(
@@ -40,64 +50,42 @@ SAMPLE_SOURCES = [
 ]
 
 
-def _mock_response(text: str, citations=None, queries=None):
+def _llm_result(
+    text: str,
+    citations: list[tuple[str, str]] | None = None,
+    queries: list[str] | None = None,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> LlmResult:
     """
-    Build a Gemini-like response with optional grounding metadata.
+    Build a neutral :class:`~tts_podcast.llm_client.LlmResult` for mocking ``complete``.
 
     Parameters
     ----------
     text : str
         Text content the mock should return.
     citations : list[tuple[str, str]] or None
-        Optional (title, uri) pairs to expose under grounding_chunks.
+        Optional ``(title, uri)`` pairs to expose as grounding citations.
     queries : list[str] or None
-        Optional list of strings exposed under web_search_queries.
+        Optional search queries to expose as grounding queries.
+    input_tokens, output_tokens : int, optional
+        Token counts to report.
 
     Returns
     -------
-    SimpleNamespace
-        Object mimicking google-genai's response with usage_metadata and
-        candidates[0].grounding_metadata fields.
+    LlmResult
+        A result carrying *text*, token counts, and optional grounding
+        (``None`` when neither *citations* nor *queries* is given).
     """
-    chunks = []
-    for title, uri in citations or []:
-        chunks.append(SimpleNamespace(web=SimpleNamespace(title=title, uri=uri)))
-
-    metadata = SimpleNamespace(
-        grounding_chunks=chunks,
-        web_search_queries=queries or [],
-    )
-    candidate = SimpleNamespace(grounding_metadata=metadata)
-    return SimpleNamespace(
+    grounding = None
+    if citations or queries:
+        grounding = Grounding(citations=citations or [], queries=queries or [])
+    return LlmResult(
         text=text,
-        candidates=[candidate],
-        usage_metadata=SimpleNamespace(prompt_token_count=100, candidates_token_count=50),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        grounding=grounding,
     )
-
-
-def _mock_genai(responses):
-    """
-    Build a mocked genai module whose generate_content yields the given responses in order.
-
-    Parameters
-    ----------
-    responses : list
-        Sequence of response objects returned successively.
-
-    Returns
-    -------
-    MagicMock
-        Mock genai module suitable for patching ``tts_podcast.research.genai``.
-    """
-    mock_model = MagicMock()
-    mock_model.generate_content.side_effect = responses
-
-    mock_client = MagicMock()
-    mock_client.models = mock_model
-
-    mock_genai = MagicMock()
-    mock_genai.Client.return_value = mock_client
-    return mock_genai
 
 
 # ---------------------------------------------------------------------------
@@ -109,17 +97,21 @@ class TestRound0:
     """Round 0 must not call the API and must return an empty report."""
 
     def test_returns_empty_report(self):
-        with patch("tts_podcast.research.genai") as mock_genai:
-            report = conduct_research(SAMPLE_SOURCES, rounds=0, gemini_cfg=GEMINI_CFG)
+        with patch("tts_podcast.research.complete") as mock_complete:
+            report = conduct_research(
+                SAMPLE_SOURCES, rounds=0, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
         assert isinstance(report, ResearchReport)
         assert report.rounds == []
         assert report.combined_notes == ""
-        mock_genai.Client.assert_not_called()
+        mock_complete.assert_not_called()
 
     def test_negative_rounds_raises(self):
         with pytest.raises(ValueError):
-            conduct_research(SAMPLE_SOURCES, rounds=-1, gemini_cfg=GEMINI_CFG)
+            conduct_research(
+                SAMPLE_SOURCES, rounds=-1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -131,36 +123,37 @@ class TestRound1Prompt:
     """The first round must inject the article(s) and language into the prompt."""
 
     def test_prompt_includes_articles_and_language(self):
-        mock_genai = _mock_genai([_mock_response("Round 1 notes")])
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("Round 1 notes")
+        ) as mock_complete:
+            conduct_research(
+                SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research(SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG)
-
-        call = mock_genai.Client.return_value.models.generate_content.call_args
-        prompt = call.kwargs["contents"]
+        prompt = mock_complete.call_args.kwargs["prompt"]
         assert "Sample Article" in prompt
         assert "https://example.com/article" in prompt
         assert "French" in prompt
         assert "Google Search" in prompt
 
     def test_uses_text_model_when_research_model_missing(self):
-        mock_genai = _mock_genai([_mock_response("notes")])
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("notes")
+        ) as mock_complete:
+            conduct_research(
+                SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research(SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG)
-
-        call = mock_genai.Client.return_value.models.generate_content.call_args
-        assert call.kwargs["model"] == "gemini-2.5-flash"
+        assert mock_complete.call_args.kwargs["model"] == "gemini/gemini-2.5-flash"
 
     def test_uses_research_model_override(self):
-        cfg = {**GEMINI_CFG, "research": {"model": "gemini-2.5-pro"}}
-        mock_genai = _mock_genai([_mock_response("notes")])
+        llm_cfg = replace(LLM_SETTINGS, research_model="gemini-2.5-pro")
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("notes")
+        ) as mock_complete:
+            conduct_research(SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=llm_cfg)
 
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research(SAMPLE_SOURCES, rounds=1, gemini_cfg=cfg)
-
-        call = mock_genai.Client.return_value.models.generate_content.call_args
-        assert call.kwargs["model"] == "gemini-2.5-pro"
+        assert mock_complete.call_args.kwargs["model"] == "gemini/gemini-2.5-pro"
 
 
 # ---------------------------------------------------------------------------
@@ -176,18 +169,19 @@ class TestRoundNPrompt:
         round2_notes = "- Follow-up gap on quantum (https://q.test/3)"
 
         responses = [
-            _mock_response(round1_notes, citations=[("Q Test", "https://q.test/1")]),
-            _mock_response(round2_notes),
+            _llm_result(round1_notes, citations=[("Q Test", "https://q.test/1")]),
+            _llm_result(round2_notes),
         ]
-        mock_genai = _mock_genai(responses)
 
-        with patch("tts_podcast.research.genai", mock_genai):
-            report = conduct_research(SAMPLE_SOURCES, rounds=2, gemini_cfg=GEMINI_CFG)
+        with patch("tts_podcast.research.complete", side_effect=responses) as mock_complete:
+            report = conduct_research(
+                SAMPLE_SOURCES, rounds=2, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
         assert len(report.rounds) == 2
 
-        calls = mock_genai.Client.return_value.models.generate_content.call_args_list
-        round_2_prompt = calls[1].kwargs["contents"]
+        calls = mock_complete.call_args_list
+        round_2_prompt = calls[1].kwargs["prompt"]
 
         assert "Initial fact about quantum" in round_2_prompt
         assert "Background on language" in round_2_prompt
@@ -199,17 +193,18 @@ class TestRoundNPrompt:
         notes_1 = "- R1 fact"
         notes_2 = "- R2 fact"
         responses = [
-            _mock_response(notes_1),
-            _mock_response(notes_2),
-            _mock_response("- R3 fact"),
+            _llm_result(notes_1),
+            _llm_result(notes_2),
+            _llm_result("- R3 fact"),
         ]
-        mock_genai = _mock_genai(responses)
 
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research(SAMPLE_SOURCES, rounds=3, gemini_cfg=GEMINI_CFG)
+        with patch("tts_podcast.research.complete", side_effect=responses) as mock_complete:
+            conduct_research(
+                SAMPLE_SOURCES, rounds=3, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
-        calls = mock_genai.Client.return_value.models.generate_content.call_args_list
-        round_3_prompt = calls[2].kwargs["contents"]
+        calls = mock_complete.call_args_list
+        round_3_prompt = calls[2].kwargs["prompt"]
 
         assert "R1 fact" in round_3_prompt
         assert "R2 fact" in round_3_prompt
@@ -220,41 +215,43 @@ class TestRoundNPrompt:
 # ---------------------------------------------------------------------------
 
 
-class TestCitationExtraction:
-    """Verify _extract_citations parses grounding_chunks and web_search_queries."""
+class TestGroundingExtraction:
+    """Verify conduct_research maps LlmResult.grounding into ResearchRound fields."""
 
-    def test_extracts_citations_and_queries(self):
-        response = _mock_response(
-            "notes",
-            citations=[("Title 1", "https://a"), ("Title 2", "https://b")],
-            queries=["query one", "query two"],
-        )
+    def test_citations_and_queries_mapped_from_grounding(self):
+        """Grounding citations/queries on the LlmResult land verbatim on the round."""
+        with patch(
+            "tts_podcast.research.complete",
+            return_value=_llm_result(
+                "notes",
+                citations=[("Title 1", "https://a"), ("Title 2", "https://b")],
+                queries=["query one", "query two"],
+            ),
+        ):
+            report = conduct_research(
+                SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
-        citations, queries = _extract_citations(response)
-
-        assert citations == [
+        round_ = report.rounds[0]
+        assert round_.citations == [
             Citation(title="Title 1", uri="https://a"),
             Citation(title="Title 2", uri="https://b"),
         ]
-        assert queries == ["query one", "query two"]
+        assert round_.raw_search_queries == ["query one", "query two"]
 
-    def test_empty_grounding_metadata_returns_empty(self):
-        response = SimpleNamespace(candidates=[SimpleNamespace(grounding_metadata=None)])
-        citations, queries = _extract_citations(response)
-        assert citations == []
-        assert queries == []
+    def test_no_grounding_yields_empty_citations_and_queries(self):
+        """A None grounding (e.g. non-Gemini provider) degrades to empty lists."""
+        with patch(
+            "tts_podcast.research.complete",
+            return_value=_llm_result("notes"),
+        ):
+            report = conduct_research(
+                SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
-    def test_skips_chunks_without_uri(self):
-        chunk_no_uri = SimpleNamespace(web=SimpleNamespace(title="X", uri=""))
-        chunk_ok = SimpleNamespace(web=SimpleNamespace(title="Y", uri="https://y"))
-        metadata = SimpleNamespace(
-            grounding_chunks=[chunk_no_uri, chunk_ok],
-            web_search_queries=[],
-        )
-        response = SimpleNamespace(candidates=[SimpleNamespace(grounding_metadata=metadata)])
-
-        citations, _ = _extract_citations(response)
-        assert citations == [Citation(title="Y", uri="https://y")]
+        round_ = report.rounds[0]
+        assert round_.citations == []
+        assert round_.raw_search_queries == []
 
 
 # ---------------------------------------------------------------------------
@@ -266,13 +263,12 @@ class TestCombinedNotes:
     """Verify the per-round notes are concatenated under round headers."""
 
     def test_combined_notes_includes_round_headers(self):
-        mock_genai = _mock_genai([
-            _mock_response("- Fact A"),
-            _mock_response("- Fact B"),
-        ])
+        responses = [_llm_result("- Fact A"), _llm_result("- Fact B")]
 
-        with patch("tts_podcast.research.genai", mock_genai):
-            report = conduct_research(SAMPLE_SOURCES, rounds=2, gemini_cfg=GEMINI_CFG)
+        with patch("tts_podcast.research.complete", side_effect=responses):
+            report = conduct_research(
+                SAMPLE_SOURCES, rounds=2, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
         assert "Research round 1" in report.combined_notes
         assert "Research round 2" in report.combined_notes
@@ -304,14 +300,15 @@ class TestTokenTrackerIntegration:
         from tts_podcast.token_tracker import TokenTracker
 
         tracker = TokenTracker()
-        mock_genai = _mock_genai([
-            _mock_response("Notes 1"),
-            _mock_response("Notes 2"),
-        ])
+        responses = [_llm_result("Notes 1"), _llm_result("Notes 2")]
 
-        with patch("tts_podcast.research.genai", mock_genai):
+        with patch("tts_podcast.research.complete", side_effect=responses):
             conduct_research(
-                SAMPLE_SOURCES, rounds=2, gemini_cfg=GEMINI_CFG, token_tracker=tracker,
+                SAMPLE_SOURCES,
+                rounds=2,
+                gemini_cfg=GEMINI_CFG,
+                llm_cfg=LLM_SETTINGS,
+                token_tracker=tracker,
             )
 
         # 2 rounds × 100 input + 50 output tokens each
@@ -329,35 +326,36 @@ class TestAngleInjection:
     """Angle reaches round-1 prompt only — never re-injected into round N>=2."""
 
     def test_angle_in_round1_prompt(self):
-        mock_genai = _mock_genai([_mock_response("Notes 1")])
-        with patch("tts_podcast.research.genai", mock_genai):
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("Notes 1")
+        ) as mock_complete:
             conduct_research(
                 SAMPLE_SOURCES,
                 rounds=1,
                 gemini_cfg=GEMINI_CFG,
+                llm_cfg=LLM_SETTINGS,
                 angle="the regulatory implications",
             )
-        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
-            "contents"
-        ]
+        prompt = mock_complete.call_args.kwargs["prompt"]
         assert "Angle to emphasize: the regulatory implications" in prompt
 
     def test_angle_header_NOT_re_injected_in_round_n_prompt(self):
         """Round-N prompt MUST NOT carry the literal 'Angle to emphasize:' header."""
-        mock_genai = _mock_genai([
-            _mock_response("Round 1 baseline notes"),
-            _mock_response("Round 2 gap notes"),
-        ])
-        with patch("tts_podcast.research.genai", mock_genai):
+        responses = [
+            _llm_result("Round 1 baseline notes"),
+            _llm_result("Round 2 gap notes"),
+        ]
+        with patch("tts_podcast.research.complete", side_effect=responses) as mock_complete:
             conduct_research(
                 SAMPLE_SOURCES,
                 rounds=2,
                 gemini_cfg=GEMINI_CFG,
+                llm_cfg=LLM_SETTINGS,
                 angle="economy",
             )
-        calls = mock_genai.Client.return_value.models.generate_content.call_args_list
-        round_1 = calls[0].kwargs["contents"]
-        round_2 = calls[1].kwargs["contents"]
+        calls = mock_complete.call_args_list
+        round_1 = calls[0].kwargs["prompt"]
+        round_2 = calls[1].kwargs["prompt"]
         # Round 1 has the header; round 2 must not (the angle stays out of the
         # gap-analysis directive; it would only survive via previous_notes).
         assert "Angle to emphasize:" in round_1
@@ -365,12 +363,13 @@ class TestAngleInjection:
 
     def test_round1_no_angle_keeps_byte_identical_prompt(self):
         """No-angle path: prompt has no 'Angle to emphasize:' line, byte-identical to baseline."""
-        mock_genai = _mock_genai([_mock_response("notes")])
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research(SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG)
-        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
-            "contents"
-        ]
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("notes")
+        ) as mock_complete:
+            conduct_research(
+                SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
+        prompt = mock_complete.call_args.kwargs["prompt"]
         assert "Angle to emphasize:" not in prompt
 
     def test_angle_plus_search_input(self):
@@ -383,17 +382,17 @@ class TestAngleInjection:
             scraped_ok=True,
             kind="search",
         )
-        mock_genai = _mock_genai([_mock_response("notes")])
-        with patch("tts_podcast.research.genai", mock_genai):
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("notes")
+        ) as mock_complete:
             conduct_research(
                 [search_source],
                 rounds=1,
                 gemini_cfg=GEMINI_CFG,
+                llm_cfg=LLM_SETTINGS,
                 angle="regulatory impact",
             )
-        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
-            "contents"
-        ]
+        prompt = mock_complete.call_args.kwargs["prompt"]
         assert "AI economy" in prompt
         assert "Angle to emphasize: regulatory impact" in prompt
 
@@ -418,13 +417,14 @@ class TestSearchOnlyRound1Prompt:
 
     def test_all_search_sources_use_search_prompt(self):
         """When every source is kind=='search', _ROUND_1_SEARCH_PROMPT must be used."""
-        mock_genai = _mock_genai([_mock_response("notes")])
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research([SEARCH_SOURCE], rounds=1, gemini_cfg=GEMINI_CFG)
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("notes")
+        ) as mock_complete:
+            conduct_research(
+                [SEARCH_SOURCE], rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
-        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
-            "contents"
-        ]
+        prompt = mock_complete.call_args.kwargs["prompt"]
         # Distinctive markers of _ROUND_1_SEARCH_PROMPT
         assert "SUBSTANTIVE, COMPREHENSIVE" in prompt
         assert "Topic:" in prompt
@@ -433,13 +433,14 @@ class TestSearchOnlyRound1Prompt:
 
     def test_url_sources_use_article_prompt(self):
         """When sources are kind=='url' (default), _ROUND_1_PROMPT must be used."""
-        mock_genai = _mock_genai([_mock_response("notes")])
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research(SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG)
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("notes")
+        ) as mock_complete:
+            conduct_research(
+                SAMPLE_SOURCES, rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
-        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
-            "contents"
-        ]
+        prompt = mock_complete.call_args.kwargs["prompt"]
         # Distinctive markers of _ROUND_1_PROMPT
         assert "complementary angles" in prompt
         assert "Articles:" in prompt
@@ -450,27 +451,25 @@ class TestSearchOnlyRound1Prompt:
         """A mix of search + url sources must fall back to _ROUND_1_PROMPT."""
         url_source = SAMPLE_SOURCES[0]
         mixed = [SEARCH_SOURCE, url_source]
-        mock_genai = _mock_genai([_mock_response("notes")])
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research(mixed, rounds=1, gemini_cfg=GEMINI_CFG)
+        with patch(
+            "tts_podcast.research.complete", return_value=_llm_result("notes")
+        ) as mock_complete:
+            conduct_research(mixed, rounds=1, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS)
 
-        prompt = mock_genai.Client.return_value.models.generate_content.call_args.kwargs[
-            "contents"
-        ]
+        prompt = mock_complete.call_args.kwargs["prompt"]
         assert "complementary angles" in prompt
         assert "SUBSTANTIVE, COMPREHENSIVE" not in prompt
 
     def test_search_prompt_round_n_unchanged(self):
         """Round N>=2 must still use _ROUND_N_PROMPT regardless of source kind."""
-        mock_genai = _mock_genai([
-            _mock_response("round 1 notes"),
-            _mock_response("round 2 notes"),
-        ])
-        with patch("tts_podcast.research.genai", mock_genai):
-            conduct_research([SEARCH_SOURCE], rounds=2, gemini_cfg=GEMINI_CFG)
+        responses = [_llm_result("round 1 notes"), _llm_result("round 2 notes")]
+        with patch("tts_podcast.research.complete", side_effect=responses) as mock_complete:
+            conduct_research(
+                [SEARCH_SOURCE], rounds=2, gemini_cfg=GEMINI_CFG, llm_cfg=LLM_SETTINGS
+            )
 
-        calls = mock_genai.Client.return_value.models.generate_content.call_args_list
-        round_2_prompt = calls[1].kwargs["contents"]
+        calls = mock_complete.call_args_list
+        round_2_prompt = calls[1].kwargs["prompt"]
 
         # Round 2 must use _ROUND_N_PROMPT (gap-analysis)
         assert "Previous research notes" in round_2_prompt

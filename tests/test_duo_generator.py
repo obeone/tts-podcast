@@ -1,29 +1,27 @@
 """
 Unit tests for :mod:`tts_podcast.duo_generator`.
 
-All Gemini API calls are mocked — no network access.
+The provider-agnostic ``complete()`` seam (:mod:`tts_podcast.llm_client`) is
+mocked — no network access.
 
 Coverage targets
 ----------------
 * Happy path: returned voices ∈ GEMINI_VOICES; personalities non-empty;
   description non-empty.
-* Token tracker: ``record_usage`` is called with the correct model id.
-* Structured-output fast path: ``response.parsed`` (newer SDK) is preferred
-  over ``response.text``.
-* JSON fallback path: ``response.parsed is None`` → ``json.loads(response.text)``.
+* Token tracker: ``record`` is called with the bare model id and token counts.
 * Voice validation: RuntimeError on voice not in GEMINI_VOICES (schema bypass).
-* Empty response: RuntimeError on blank ``response.text``.
+* Empty response: RuntimeError on blank result text.
 * Non-JSON response: RuntimeError on garbage text.
 * No tracker: passing ``token_tracker=None`` is safe (no AttributeError).
-* Service tier: ``http_options`` header is set when ``service_tier`` is present;
-  absent when not set.
-* Retry decorator wired: ``@gemini_retry`` wraps the inner API call.
+* Extra headers: ``llm_cfg.extra_headers`` (e.g. the service-tier shim) reach
+  ``complete()`` verbatim; ``None`` when unset.
 * Prompt content: source titles and research notes appear in the user prompt.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -31,7 +29,9 @@ import pytest
 
 from tts_podcast.duo_generator import _build_prompt, generate_duo
 from tts_podcast.duos import GEMINI_VOICES
+from tts_podcast.llm_client import LlmResult
 from tts_podcast.models import Source
+from tts_podcast.settings import LlmSettings
 
 
 # ---------------------------------------------------------------------------
@@ -55,15 +55,20 @@ def _fake_source(
     )
 
 
-def _fake_gemini_cfg(service_tier: str | None = None) -> dict[str, Any]:
-    """Build a minimal gemini config dict."""
-    cfg: dict[str, Any] = {
-        "api_key": "fake-api-key",
-        "text_model": "gemini-2.5-flash",
-    }
-    if service_tier is not None:
-        cfg["service_tier"] = service_tier
-    return cfg
+def _fake_gemini_cfg() -> dict[str, Any]:
+    """Build a minimal gemini config dict (unused for auth/model selection now)."""
+    return {}
+
+
+LLM_SETTINGS = LlmSettings(
+    provider="gemini",
+    text_model="gemini-2.5-flash",
+    research_model=None,
+    api_key="fake-api-key",
+    api_base=None,
+    temperature=None,
+    extra_headers=None,
+)
 
 
 def _valid_voice() -> str:
@@ -78,14 +83,15 @@ def _second_valid_voice() -> str:
     return next(it)
 
 
-def _make_response(
+def _make_llm_result(
     speaker1_voice: str | None = None,
     speaker2_voice: str | None = None,
-    use_parsed: bool = True,
     text_override: str | None = None,
-) -> MagicMock:
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> LlmResult:
     """
-    Build a mock Gemini response object.
+    Build a neutral :class:`~tts_podcast.llm_client.LlmResult` for mocking ``complete``.
 
     Parameters
     ----------
@@ -93,55 +99,37 @@ def _make_response(
         Voice name for speaker1; defaults to a valid voice.
     speaker2_voice:
         Voice name for speaker2; defaults to a different valid voice.
-    use_parsed:
-        When True, ``response.parsed`` is set (fast path).
-        When False, ``response.parsed is None`` and ``response.text`` is used.
     text_override:
-        When given, sets ``response.text`` to this value regardless of
-        ``use_parsed``; allows injecting invalid JSON or empty strings.
+        When given, used verbatim as the result text (allows injecting
+        invalid JSON or an empty string); otherwise a valid duo JSON blob
+        is generated from *speaker1_voice* / *speaker2_voice*.
+    input_tokens, output_tokens:
+        Token counts to report.
     """
-    v1 = speaker1_voice or _valid_voice()
-    v2 = speaker2_voice or _second_valid_voice()
-
-    duo_dict = {
-        "description": "A calm analytical duo.",
-        "speaker1": {"name": "Alex", "voice": v1, "personality": "calm and precise"},
-        "speaker2": {"name": "Jordan", "voice": v2, "personality": "warm and curious"},
-    }
-
-    response = MagicMock()
-    response.usage_metadata = MagicMock()
-
     if text_override is not None:
-        response.text = text_override
-        response.parsed = None
-    elif use_parsed:
-        response.parsed = duo_dict
-        response.text = json.dumps(duo_dict)
+        text = text_override
     else:
-        response.parsed = None
-        response.text = json.dumps(duo_dict)
+        v1 = speaker1_voice or _valid_voice()
+        v2 = speaker2_voice or _second_valid_voice()
+        duo_dict = {
+            "description": "A calm analytical duo.",
+            "speaker1": {"name": "Alex", "voice": v1, "personality": "calm and precise"},
+            "speaker2": {"name": "Jordan", "voice": v2, "personality": "warm and curious"},
+        }
+        text = json.dumps(duo_dict)
 
-    return response
+    return LlmResult(text=text, input_tokens=input_tokens, output_tokens=output_tokens, grounding=None)
 
 
 # ---------------------------------------------------------------------------
-# Fixture: patched genai.Client
+# Fixture: patched complete()
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def patched_client(request):
-    """
-    Yield a factory (response_or_fn) -> MagicMock(client).
-
-    Patches ``genai.Client`` so that ``client.models.generate_content``
-    returns the given response (or calls the given callable).
-    """
-    # Indirect parameterization not needed here; simple fixture returning factory.
-    with patch("tts_podcast.duo_generator.genai.Client") as MockClient:
-        client_instance = MagicMock()
-        MockClient.return_value = client_instance
-        yield client_instance, MockClient
+def mock_complete():
+    """Yield the mock for ``tts_podcast.duo_generator.complete``."""
+    with patch("tts_podcast.duo_generator.complete") as m:
+        yield m
 
 
 # ---------------------------------------------------------------------------
@@ -149,61 +137,45 @@ def patched_client(request):
 # ---------------------------------------------------------------------------
 
 class TestGenerateDuoHappyPath:
-    """Core behaviour on a well-formed Gemini response."""
+    """Core behaviour on a well-formed structured-output result."""
 
-    def test_returns_dict_with_expected_keys(self, patched_client):
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response()
+    def test_returns_dict_with_expected_keys(self, mock_complete):
+        mock_complete.return_value = _make_llm_result()
 
-        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg())
+        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
         assert set(duo.keys()) == {"description", "speaker1", "speaker2"}
 
-    def test_voices_in_gemini_voices(self, patched_client):
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response()
+    def test_voices_in_gemini_voices(self, mock_complete):
+        mock_complete.return_value = _make_llm_result()
 
-        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg())
+        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
         assert duo["speaker1"]["voice"] in GEMINI_VOICES
         assert duo["speaker2"]["voice"] in GEMINI_VOICES
 
-    def test_personalities_non_empty(self, patched_client):
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response()
+    def test_personalities_non_empty(self, mock_complete):
+        mock_complete.return_value = _make_llm_result()
 
-        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg())
+        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
         assert duo["speaker1"]["personality"].strip()
         assert duo["speaker2"]["personality"].strip()
 
-    def test_description_non_empty(self, patched_client):
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response()
+    def test_description_non_empty(self, mock_complete):
+        mock_complete.return_value = _make_llm_result()
 
-        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg())
+        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
         assert duo["description"].strip()
 
-    def test_speaker_names_present(self, patched_client):
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response()
+    def test_speaker_names_present(self, mock_complete):
+        mock_complete.return_value = _make_llm_result()
 
-        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg())
+        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
         assert duo["speaker1"]["name"]
         assert duo["speaker2"]["name"]
-
-    def test_json_fallback_path(self, patched_client):
-        """When response.parsed is None, json.loads(response.text) is used."""
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response(
-            use_parsed=False
-        )
-
-        duo = generate_duo([_fake_source()], "", _fake_gemini_cfg())
-
-        assert duo["speaker1"]["voice"] in GEMINI_VOICES
 
 
 # ---------------------------------------------------------------------------
@@ -211,28 +183,24 @@ class TestGenerateDuoHappyPath:
 # ---------------------------------------------------------------------------
 
 class TestTokenTracker:
-    """token_tracker.record_usage is called correctly."""
+    """token_tracker.record is called with the bare model id and token counts."""
 
-    def test_record_usage_called_with_correct_model(self, patched_client):
-        client_instance, _ = patched_client
-        response = _make_response()
-        client_instance.models.generate_content.return_value = response
+    def test_record_called_with_correct_model(self, mock_complete):
+        mock_complete.return_value = _make_llm_result(input_tokens=111, output_tokens=22)
 
         tracker = MagicMock()
-        cfg = _fake_gemini_cfg()
-        generate_duo([_fake_source()], "", cfg, tracker)
+        generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS, tracker)
 
-        tracker.record_usage.assert_called_once_with(
-            cfg["text_model"], response.usage_metadata
-        )
+        tracker.record.assert_called_once_with(LLM_SETTINGS.text_model, 111, 22)
 
-    def test_no_tracker_does_not_raise(self, patched_client):
+    def test_no_tracker_does_not_raise(self, mock_complete):
         """Passing token_tracker=None skips tracking silently."""
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response()
+        mock_complete.return_value = _make_llm_result()
 
         # Should not raise AttributeError or anything else.
-        generate_duo([_fake_source()], "", _fake_gemini_cfg(), token_tracker=None)
+        generate_duo(
+            [_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS, token_tracker=None
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -240,14 +208,11 @@ class TestTokenTracker:
 # ---------------------------------------------------------------------------
 
 class TestGenerateDuoErrors:
-    """RuntimeError / BadParameter raised on malformed Gemini responses."""
+    """RuntimeError / BadParameter raised on malformed structured-output results."""
 
-    def test_voice_not_in_gemini_voices_raises_runtime_error(self, patched_client):
-        """Voice returned by SDK but not in GEMINI_VOICES → RuntimeError."""
-        client_instance, _ = patched_client
-        response = _make_response(speaker1_voice="HallucinatedVoice")
-        # Force the parsed path to bypass schema enum (simulate old SDK).
-        response.parsed = {
+    def test_voice_not_in_gemini_voices_raises_runtime_error(self, mock_complete):
+        """Voice returned by the model but not in GEMINI_VOICES → RuntimeError."""
+        duo_dict = {
             "description": "desc",
             "speaker1": {"name": "X", "voice": "HallucinatedVoice", "personality": "x"},
             "speaker2": {
@@ -256,39 +221,32 @@ class TestGenerateDuoErrors:
                 "personality": "y",
             },
         }
-        client_instance.models.generate_content.return_value = response
+        mock_complete.return_value = LlmResult(text=json.dumps(duo_dict))
 
         with pytest.raises(RuntimeError, match="HallucinatedVoice"):
-            generate_duo([_fake_source()], "", _fake_gemini_cfg())
+            generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
-    def test_empty_response_text_raises_runtime_error(self, patched_client):
-        """Blank response.text with no parsed object → RuntimeError."""
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response(
-            text_override=""
-        )
+    def test_empty_response_text_raises_runtime_error(self, mock_complete):
+        """Blank result text → RuntimeError."""
+        mock_complete.return_value = _make_llm_result(text_override="")
 
         with pytest.raises(RuntimeError, match="empty response"):
-            generate_duo([_fake_source()], "", _fake_gemini_cfg())
+            generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
-    def test_non_json_response_raises_runtime_error(self, patched_client):
-        """Garbage text from SDK (not JSON) → RuntimeError."""
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response(
+    def test_non_json_response_raises_runtime_error(self, mock_complete):
+        """Garbage text (not JSON) → RuntimeError."""
+        mock_complete.return_value = _make_llm_result(
             text_override="Sorry, I cannot do that."
         )
 
         with pytest.raises(RuntimeError, match="non-JSON"):
-            generate_duo([_fake_source()], "", _fake_gemini_cfg())
+            generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
-    def test_missing_voice_field_raises_bad_parameter(self, patched_client):
+    def test_missing_voice_field_raises_bad_parameter(self, mock_complete):
         """Speaker block missing 'voice' key → click.BadParameter from _validate_speaker."""
         import click
 
-        client_instance, _ = patched_client
-        response = MagicMock()
-        response.usage_metadata = MagicMock()
-        response.parsed = {
+        duo_dict = {
             "description": "desc",
             "speaker1": {"name": "Alex", "personality": "calm"},  # no voice
             "speaker2": {
@@ -297,95 +255,39 @@ class TestGenerateDuoErrors:
                 "personality": "warm",
             },
         }
-        response.text = json.dumps(response.parsed)
-        client_instance.models.generate_content.return_value = response
+        mock_complete.return_value = LlmResult(text=json.dumps(duo_dict))
 
         with pytest.raises(click.BadParameter):
-            generate_duo([_fake_source()], "", _fake_gemini_cfg())
+            generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
 
 # ---------------------------------------------------------------------------
-# Service tier tests
+# Extra-headers passthrough tests
 # ---------------------------------------------------------------------------
 
-class TestServiceTier:
-    """http_options header is set when service_tier is configured."""
+class TestExtraHeaders:
+    """llm_cfg.extra_headers (e.g. the service-tier shim) reach complete() verbatim."""
 
-    def test_service_tier_header_passed(self, patched_client):
-        """When service_tier is set, http_options header is included in config."""
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response()
-
-        generate_duo(
-            [_fake_source()],
-            "",
-            _fake_gemini_cfg(service_tier="dynamic"),
+    def test_extra_headers_passed_through(self, mock_complete):
+        """When llm_cfg.extra_headers is set, it is forwarded to complete()."""
+        mock_complete.return_value = _make_llm_result()
+        llm_cfg = replace(
+            LLM_SETTINGS, extra_headers={"x-goog-api-service-tier": "dynamic"}
         )
 
-        # generate_content is called as generate_content(model=..., contents=..., config=...)
-        _, kwargs = client_instance.models.generate_content.call_args
-        config = kwargs["config"]
-        # Verify http_options header contains service tier.
-        assert config.http_options is not None
-        assert config.http_options.headers["x-goog-api-service-tier"] == "dynamic"
+        generate_duo([_fake_source()], "", _fake_gemini_cfg(), llm_cfg)
 
-    def test_no_service_tier_no_http_options(self, patched_client):
-        """When service_tier is absent, http_options is not set on the config."""
-        client_instance, _ = patched_client
-        client_instance.models.generate_content.return_value = _make_response()
+        _, kwargs = mock_complete.call_args
+        assert kwargs["extra_headers"] == {"x-goog-api-service-tier": "dynamic"}
 
-        generate_duo([_fake_source()], "", _fake_gemini_cfg())
+    def test_no_extra_headers_passes_none(self, mock_complete):
+        """When llm_cfg.extra_headers is unset, complete() receives None."""
+        mock_complete.return_value = _make_llm_result()
 
-        _, kwargs = client_instance.models.generate_content.call_args
-        config = kwargs["config"]
-        # When no service_tier, the config should have no http_options key.
-        assert not hasattr(config, "http_options") or config.http_options is None
+        generate_duo([_fake_source()], "", _fake_gemini_cfg(), LLM_SETTINGS)
 
-
-# ---------------------------------------------------------------------------
-# Retry wiring tests
-# ---------------------------------------------------------------------------
-
-class TestRetryWiring:
-    """@gemini_retry is active on the inner API call."""
-
-    def test_gemini_retry_retries_on_server_error(self, patched_client):
-        """A ServerError on first call is retried; second call succeeds."""
-        from google.genai import errors as genai_errors
-
-        client_instance, _ = patched_client
-        success_response = _make_response()
-        server_error = genai_errors.ServerError("503 Service Unavailable", {"error": {}})
-
-        client_instance.models.generate_content.side_effect = [
-            server_error,
-            success_response,
-        ]
-
-        # gemini_retry uses tenacity which calls tenacity.nap.sleep internally.
-        with patch("tenacity.nap.sleep"):
-            duo = generate_duo([_fake_source()], "", _fake_gemini_cfg())
-
-        assert duo["speaker1"]["voice"] in GEMINI_VOICES
-        assert client_instance.models.generate_content.call_count == 2
-
-    def test_client_error_not_retried(self, patched_client):
-        """4xx (non-ServerError) exceptions propagate immediately without retry."""
-        from google.genai import errors as genai_errors
-
-        client_instance, _ = patched_client
-        # Use ClientError (4xx) — not retried by @gemini_retry.
-        client_error = genai_errors.ClientError(
-            "400 Bad Request",
-            {"error": {"status": "INVALID_ARGUMENT"}},
-        )
-        client_instance.models.generate_content.side_effect = client_error
-
-        with pytest.raises(genai_errors.ClientError):
-            generate_duo([_fake_source()], "", _fake_gemini_cfg())
-
-        # Should have been called exactly once — no retry.
-        assert client_instance.models.generate_content.call_count == 1
+        _, kwargs = mock_complete.call_args
+        assert kwargs["extra_headers"] is None
 
 
 # ---------------------------------------------------------------------------

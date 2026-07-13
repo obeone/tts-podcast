@@ -240,7 +240,7 @@ class TestStyleFlagsWiring:
         runner, config_path = cli_env
         captured = {}
 
-        def _capture(articles, gemini_cfg, speaker1_name, speaker2_name, **kwargs):
+        def _capture(articles, gemini_cfg, _llm_cfg, speaker1_name, speaker2_name, **kwargs):
             # Build the actual prompt the way generate_dialogue would, so we
             # exercise the validate_preset("none") -> None resolution path.
             from tts_podcast.llm_summarizer import _build_prompt
@@ -497,7 +497,7 @@ class TestDuoAuto:
 
         generated = _make_generated_duo(s1_name="Mira", s2_name="Ravi")
 
-        def _capture_dialogue(_articles, gemini_cfg, speaker1_name, speaker2_name, **_kw):
+        def _capture_dialogue(_articles, gemini_cfg, _llm_cfg, speaker1_name, speaker2_name, **_kw):
             captured["s1"] = speaker1_name
             captured["s2"] = speaker2_name
             return []
