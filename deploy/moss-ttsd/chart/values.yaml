@@ -40,6 +40,37 @@ controllers:
       #   - key: nvidia.com/gpu
       #     operator: Exists
       #     effect: NoSchedule
+    # First boot writes tens of GB to the /models PVC as UID 10001. fsGroup
+    # (below) covers CSI drivers that honour it, but several (NFS, some block
+    # drivers) leave the volume root-owned, and the non-root server then can't
+    # write. This root init container chowns the mount so writes always work,
+    # regardless of the storage class. Idempotent; a near no-op where fsGroup
+    # already applied.
+    initContainers:
+      init-perms:
+        image:
+          repository: busybox
+          tag: "1.36"
+          pullPolicy: IfNotPresent
+        command:
+          - sh
+          - -c
+          - chown -R 10001:10001 /models
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          # Override the pod-level runAsNonRoot so this container may run as
+          # root purely to fix ownership.
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+            add:
+              - CHOWN
+              - FOWNER
+              - DAC_OVERRIDE
     containers:
       main:
         # Built from deploy/moss-ttsd/Dockerfile. Override at deploy time:
