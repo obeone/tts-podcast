@@ -40,9 +40,10 @@ The build context is this directory; the Dockerfile clones MOSS-TTSD itself.
 
 ```bash
 docker buildx build \
-  -t ghcr.io/obeone/moss-ttsd:1.0.0 \
+  -t harbor.obeone.cloud/private/moss-ttsd:1.0.0 \
   --build-arg MOSS_TTSD_REF=main \
   deploy/moss-ttsd
+docker push harbor.obeone.cloud/private/moss-ttsd:1.0.0
 ```
 
 Pin `MOSS_TTSD_REF` (and `SGLANG_REF`) to tags or commits for reproducible
@@ -52,6 +53,18 @@ selects the PyTorch CUDA wheel index; keep it in sync with `CUDA_IMAGE` and the
 `torch` pin in the upstream `requirements.txt`.
 
 ## Deploy
+
+The image is in a private Harbor repo, so the target namespace needs a pull
+secret first:
+
+```bash
+kubectl create secret docker-registry harbor-obeone \
+  --docker-server=harbor.obeone.cloud \
+  --docker-username=<user> --docker-password=<token> -n <namespace>
+```
+
+Then reference it via `defaultPodOptions.imagePullSecrets` in `values.yaml`
+(commented example provided) and install:
 
 ```bash
 cd deploy/moss-ttsd/chart

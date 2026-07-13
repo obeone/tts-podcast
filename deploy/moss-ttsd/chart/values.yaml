@@ -7,6 +7,13 @@
 defaultPodOptions:
   # The server never calls the Kubernetes API.
   automountServiceAccountToken: false
+  # The image lives in a private Harbor repo. Create a docker-registry secret in
+  # the target namespace and reference it here:
+  #   kubectl create secret docker-registry harbor-obeone \
+  #     --docker-server=harbor.obeone.cloud --docker-username=<user> \
+  #     --docker-password=<token> -n <namespace>
+  # imagePullSecrets:
+  #   - name: harbor-obeone
   securityContext:
     # Matches the non-root user baked into the image (UID/GID 10001) and lets
     # the mounted /models PVC be group-writable for the downloaded weights.
@@ -38,7 +45,7 @@ controllers:
         # Built from deploy/moss-ttsd/Dockerfile. Override at deploy time:
         #   --set controllers.main.containers.main.image.tag=<tag>
         image:
-          repository: ghcr.io/obeone/moss-ttsd
+          repository: harbor.obeone.cloud/private/moss-ttsd
           tag: "1.0.0"
           pullPolicy: IfNotPresent
         env:
