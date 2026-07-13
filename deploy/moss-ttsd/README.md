@@ -1,0 +1,86 @@
+# MOSS-TTSD server
+
+Container image and Helm chart to run [MOSS-TTSD](https://github.com/OpenMOSS/MOSS-TTSD)
+v1.0 as an HTTP TTS service, using the project's native SGLang end-to-end
+serving. This is an optional self-hosted TTS backend, deployed separately from
+the `tts-podcast` pipeline (which uses Gemini TTS by default).
+
+## Layout
+
+```text
+deploy/moss-ttsd/
+├── Dockerfile        # CUDA image: clones MOSS-TTSD, installs deps (uv), runs SGLang
+├── entrypoint.sh     # first-boot weight download + fusion, then `sglang serve`
+├── .dockerignore
+└── chart/            # bjw-s common 5.x Helm chart
+```
+
+## How it works
+
+- **GPU only.** MOSS-TTSD needs an NVIDIA CUDA GPU; there is no CPU path. The
+  image builds on `nvidia/cuda:*-devel` (nvcc is required to compile
+  flash-attn).
+- **Weights are not baked into the image.** On first start `entrypoint.sh`
+  downloads `OpenMOSS-Team/MOSS-TTSD-v1.0` and `OpenMOSS-Team/MOSS-Audio-Tokenizer`
+  from HuggingFace, fuses them with `scripts/fuse_moss_tts_delay_with_codec.py`
+  into `$MODEL_DIR`, then launches SGLang. The fused model lives on a persistent
+  volume, so this one-time step is skipped on later starts.
+- **Server.** SGLang's native HTTP server on port `30000`
+  (`sglang serve --model-path <fused> --delay-pattern --trust-remote-code`).
+  `/health` reports readiness once the model is loaded.
+
+## Build
+
+The build context is this directory; the Dockerfile clones MOSS-TTSD itself.
+
+```bash
+docker buildx build \
+  -t ghcr.io/obeone/moss-ttsd:1.0.0 \
+  --build-arg MOSS_TTSD_REF=main \
+  deploy/moss-ttsd
+```
+
+Pin `MOSS_TTSD_REF` to a tag or commit for reproducible builds. `CUDA_IMAGE`
+and `PYTHON_VERSION` are also overridable build args.
+
+## Deploy
+
+```bash
+cd deploy/moss-ttsd/chart
+helm dependency update
+helm install moss-ttsd . \
+  --set controllers.main.containers.main.image.tag=1.0.0
+```
+
+First boot is slow (tens of GB downloaded + fused): the startup probe tolerates
+up to ~90 minutes. Watch `kubectl logs -f deploy/moss-ttsd`.
+
+### Key values
+
+- `persistence.models` — the model store (RWO PVC, 100Gi default). Set
+  `storageClass` to a fast class. Keep it enabled; otherwise weights
+  re-download every restart.
+- `controllers.main.containers.main.resources` — GPU (`nvidia.com/gpu: 1`) and
+  memory. Adjust to your hardware.
+- `controllers.main.pod.runtimeClassName` — `nvidia` by default; add
+  `nodeSelector`/`tolerations` (commented in `values.yaml`) to pin GPU nodes.
+- `SGLANG_EXTRA_ARGS` env — forwarded to `sglang serve`, e.g.
+  `--mem-fraction-static 0.85` to curb VRAM fragmentation on tight GPUs.
+
+### Gated/private weight repos
+
+The MOSS repos are public, so no token is needed by default. For gated repos:
+
+1. Set `secrets.hf-token.enabled: true` and its `HF_TOKEN` value (or point at an
+   existing secret).
+2. Uncomment the `envFrom` block on the main container in `values.yaml`.
+
+## Caveats / assumptions to verify
+
+- Upstream install commands (`uv pip install ./sglang/python[all]`,
+  `sglang serve ...`, the fuse script path) are taken from the MOSS-TTSD README.
+  Re-check them against the ref you pin; the project moves fast.
+- CUDA 12.4 base is a sensible default but must match the torch wheels pulled by
+  `requirements.txt`. Bump `CUDA_IMAGE` if upstream requires a different toolkit.
+- Not wired into the `tts-podcast` CLI. Consuming this backend from the pipeline
+  is a separate change.

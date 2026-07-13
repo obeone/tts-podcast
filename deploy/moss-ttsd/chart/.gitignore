@@ -1,0 +1,5 @@
+# Vendored Helm dependencies: fetched via `helm dependency update` (Chart.lock
+# pins the version), not committed.
+charts/*.tgz
+# Stray tooling state.
+.omc/
