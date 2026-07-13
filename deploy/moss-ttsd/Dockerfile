@@ -31,6 +31,9 @@ FROM ${CUDA_IMAGE}
 ARG MOSS_TTSD_REF=main
 ARG MOSS_TTSD_REPO=https://github.com/OpenMOSS/MOSS-TTSD.git
 ARG PYTHON_VERSION=3.12
+# CUDA wheel variant for torch. The `+cu128` build lives on PyTorch's index,
+# not PyPI, so uv is pointed there below. Keep in sync with CUDA_IMAGE.
+ARG TORCH_CUDA=cu128
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -64,7 +67,9 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # without an explicit --python flag.
 ENV VENV=/opt/venv \
     VIRTUAL_ENV=/opt/venv \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/${TORCH_CUDA} \
+    UV_INDEX_STRATEGY=unsafe-best-match
 RUN uv venv --python python${PYTHON_VERSION} ${VENV}
 ENV PATH="${VENV}/bin:${PATH}"
 

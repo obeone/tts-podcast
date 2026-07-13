@@ -40,8 +40,10 @@ docker buildx build \
   deploy/moss-ttsd
 ```
 
-Pin `MOSS_TTSD_REF` to a tag or commit for reproducible builds. `CUDA_IMAGE`
-and `PYTHON_VERSION` are also overridable build args.
+Pin `MOSS_TTSD_REF` to a tag or commit for reproducible builds. `CUDA_IMAGE`,
+`PYTHON_VERSION` and `TORCH_CUDA` are also overridable build args. `TORCH_CUDA`
+(default `cu128`) selects the PyTorch CUDA wheel index; keep it in sync with
+`CUDA_IMAGE` and the `torch` pin in the upstream `requirements.txt`.
 
 ## Deploy
 
