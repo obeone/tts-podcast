@@ -18,17 +18,20 @@
 # This keeps the image to CUDA + deps only and lets the multi-GB checkpoints
 # live on a PVC that survives restarts and rollouts.
 #
-# GPU: an NVIDIA CUDA GPU is required. flash-attn is compiled against nvcc, so
-# the build uses a CUDA *devel* base. There is no realistic CPU path.
+# GPU: an NVIDIA CUDA 13 GPU is required (driver >= ~580). flash-attn is
+# installed as a prebuilt cu13 wheel; the CUDA *devel* base is kept for any
+# source builds pulled in by sglang[all]. There is no realistic CPU path.
 
 # --- Build arguments -------------------------------------------------------
-# CUDA devel base carries nvcc, needed to compile flash-attn. The CUDA minor
-# MUST match the toolkit torch was built against: requirements.txt pins
-# torch==2.9.1+cu128, i.e. CUDA 12.8. A mismatch (e.g. 12.4) makes flash-attn
-# compile against the wrong nvcc. Bump this in lockstep with the torch pin.
-# Ubuntu 24.04 LTS: supported to 2029, and ships python3.12 natively (no PPA).
+# CUDA 13 base. We install a *prebuilt* flash-attn wheel instead of compiling
+# from source; upstream only ships torch2.9 flash-attn wheels for CUDA 13
+# (there is no cu12/torch2.9 wheel), so the whole stack is retargeted to CUDA 13:
+# torch is forced to 2.9.1+cu130 (see the requirements rewrite below) to match
+# the cu13 flash-attn wheel. This requires the host NVIDIA driver to support
+# CUDA 13 (driver >= ~580). Ubuntu 24.04 LTS ships python3.12 natively (no PPA).
+# devel base keeps nvcc around for any source builds pulled by sglang[all].
 # Override the whole base with --build-arg CUDA_IMAGE=...
-ARG CUDA_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+ARG CUDA_IMAGE=nvidia/cuda:13.0.3-cudnn-devel-ubuntu24.04
 
 FROM ${CUDA_IMAGE}
 
@@ -41,9 +44,13 @@ ARG MOSS_TTSD_REPO=https://github.com/OpenMOSS/MOSS-TTSD.git
 ARG SGLANG_REPO=https://github.com/OpenMOSS/sglang.git
 ARG SGLANG_REF=moss-ttsd-v1.0-with-cat
 ARG PYTHON_VERSION=3.12
-# CUDA wheel variant for torch. The `+cu128` build lives on PyTorch's index,
-# not PyPI, so uv is pointed there below. Keep in sync with CUDA_IMAGE.
-ARG TORCH_CUDA=cu128
+# CUDA wheel variant for torch. cu130 to match the CUDA 13 base and the cu13
+# flash-attn wheel. These `+cuNNN` builds live on PyTorch's index, not PyPI, so
+# uv is pointed there below. Keep in sync with CUDA_IMAGE.
+ARG TORCH_CUDA=cu130
+# Prebuilt flash-attn wheel matching torch2.9 / cu13 / cp312 / cxx11-abi / x86_64.
+# Avoids the ~1h source compile. Override if you bump torch or python.
+ARG FLASH_ATTN_WHEEL=https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post1/flash_attn-2.8.3+cu13torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -92,19 +99,20 @@ RUN git clone --depth 1 --branch ${SGLANG_REF} ${SGLANG_REPO} /app/sglang || \
     (git clone ${SGLANG_REPO} /app/sglang && git -C /app/sglang checkout ${SGLANG_REF})
 
 # --- VENV_MOSS: inference / download / fusion deps -------------------------
-# torch must land before flash-attn (flash-attn's build imports torch). uv
-# cache mount keeps wheels across rebuilds.
+# Retarget the upstream torch pin from CUDA 12.8 to 13.0 so it matches the
+# CUDA 13 base and the prebuilt cu13 flash-attn wheel. requirements.txt pins
+# torch==2.9.1+cu128 (and torchaudio likewise); rewrite both to +cu130.
+RUN sed -i 's/+cu128/+cu130/g' requirements.txt
+
+# torch must land before flash-attn (the wheel declares a torch dependency).
+# uv cache mount keeps wheels across rebuilds.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python ${VENV_MOSS} -r requirements.txt
 
-# flash-attn compiles CUDA kernels from source (no prebuilt wheel exists for
-# this torch/cuda/python combo). --no-build-isolation lets it see the torch
-# already in VENV_MOSS. Its heavy kernels can spike to ~10-20 GB of RAM *per*
-# nvcc job, so MAX_JOBS is kept low to stay under the builder's memory even
-# though plenty of CPUs are free; MAX_JOBS=4 triggered the OOM killer.
-ARG FLASH_ATTN_MAX_JOBS=2
+# flash-attn: install the prebuilt cu13/torch2.9 wheel (see FLASH_ATTN_WHEEL).
+# No source compilation, so no nvcc OOM and a fast, reproducible build.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    MAX_JOBS=${FLASH_ATTN_MAX_JOBS} uv pip install --python ${VENV_MOSS} flash-attn --no-build-isolation
+    uv pip install --python ${VENV_MOSS} "${FLASH_ATTN_WHEEL}"
 
 # huggingface_hub CLI for weight download in the entrypoint.
 RUN --mount=type=cache,target=/root/.cache/uv \
