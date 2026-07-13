@@ -25,6 +25,11 @@ log() { printf '[entrypoint] %s\n' "$*" >&2; }
 : "${SERVE_HOST:=0.0.0.0}"
 : "${SERVE_PORT:=30000}"
 
+# The two virtualenvs baked into the image (see Dockerfile header). Download +
+# fusion run in VENV_MOSS; serving runs in VENV_SGLANG.
+: "${VENV_MOSS:=/opt/venv-moss}"
+: "${VENV_SGLANG:=/opt/venv-sglang}"
+
 # Staging dirs for the raw (un-fused) downloads.
 RAW_DIR="${HF_HOME}/raw"
 TTSD_DIR="${RAW_DIR}/moss-ttsd-v1.0"
@@ -49,7 +54,7 @@ else
     hf_download() {
         local repo="$1" dest="$2"
         log "Downloading ${repo} -> ${dest}"
-        huggingface-cli download "${repo}" --local-dir "${dest}" --quiet
+        "${VENV_MOSS}/bin/huggingface-cli" download "${repo}" --local-dir "${dest}" --quiet
     }
 
     hf_download "${MOSS_TTSD_HF_REPO}" "${TTSD_DIR}"
@@ -60,7 +65,7 @@ else
     # fusion never leaves a half-written model that the readiness check trusts.
     tmp_fused="${MODEL_DIR}.tmp.$$"
     rm -rf "${tmp_fused}"
-    python /app/scripts/fuse_moss_tts_delay_with_codec.py \
+    "${VENV_MOSS}/bin/python" /app/scripts/fuse_moss_tts_delay_with_codec.py \
         --model-path "${TTSD_DIR}" \
         --codec-model-path "${CODEC_DIR}" \
         --save-path "${tmp_fused}"
@@ -74,7 +79,7 @@ log "Starting SGLang server on ${SERVE_HOST}:${SERVE_PORT} for ${MODEL_DIR}"
 # exec so SGLang becomes PID 1 and receives STOPSIGNAL (SIGINT) directly.
 # --delay-pattern and --trust-remote-code are required by the fused MOSS model.
 # shellcheck disable=SC2086
-exec sglang serve \
+exec "${VENV_SGLANG}/bin/sglang" serve \
     --model-path "${MODEL_DIR}" \
     --delay-pattern \
     --trust-remote-code \
