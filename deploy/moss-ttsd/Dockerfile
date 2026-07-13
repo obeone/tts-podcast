@@ -15,9 +15,13 @@
 # the build uses a CUDA *devel* base. There is no realistic CPU path.
 
 # --- Build arguments -------------------------------------------------------
-# CUDA devel base carries nvcc, needed to compile flash-attn. Pin the CUDA
-# minor here so torch's prebuilt wheels match the toolkit at runtime.
-ARG CUDA_IMAGE=nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+# CUDA devel base carries nvcc, needed to compile flash-attn. The CUDA minor
+# MUST match the toolkit torch was built against: requirements.txt pins
+# torch==2.9.1+cu128, i.e. CUDA 12.8. A mismatch (e.g. 12.4) makes flash-attn
+# compile against the wrong nvcc. Bump this in lockstep with the torch pin.
+# Ubuntu 22.04 is a comfort default; torch wheels are manylinux, so 24.04
+# works too. Override the whole base with --build-arg CUDA_IMAGE=...
+ARG CUDA_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
 
 FROM ${CUDA_IMAGE}
 

@@ -80,7 +80,11 @@ The MOSS repos are public, so no token is needed by default. For gated repos:
 - Upstream install commands (`uv pip install ./sglang/python[all]`,
   `sglang serve ...`, the fuse script path) are taken from the MOSS-TTSD README.
   Re-check them against the ref you pin; the project moves fast.
-- CUDA 12.4 base is a sensible default but must match the torch wheels pulled by
-  `requirements.txt`. Bump `CUDA_IMAGE` if upstream requires a different toolkit.
+- The CUDA base defaults to 12.8 (`nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04`)
+  because `requirements.txt` pins `torch==2.9.1+cu128`. Keep `CUDA_IMAGE` in
+  lockstep with the torch pin: flash-attn compiles against the base image's
+  nvcc, so a mismatched toolkit breaks the build. Ubuntu version is not
+  significant (torch wheels are manylinux). The host NVIDIA driver must support
+  CUDA 12.8.
 - Not wired into the `tts-podcast` CLI. Consuming this backend from the pipeline
   is a separate change.
