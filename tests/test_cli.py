@@ -14,11 +14,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from tts_podcast.cli import cli
+from tts_podcast.config import load_config
 from tts_podcast.models import Source
 from tts_podcast.research import ResearchReport
+from tts_podcast.settings import resolve_llm_settings, resolve_tts_settings
 
 
 def _write_config(tmp_path: Path) -> Path:
@@ -602,3 +605,123 @@ class TestDuoAuto:
         # The generated dict itself must not have been mutated.
         assert generated["speaker1"]["personality"] == original_p1
         assert generated["speaker2"]["personality"] == original_p2
+
+
+# ---------------------------------------------------------------------------
+# `config init` wizard — provider-agnostic `llm:` / pluggable `tts:` sections
+# ---------------------------------------------------------------------------
+
+class TestConfigInitWizard:
+    """
+    ``config init`` prompts for the new ``llm:`` (text generation) and
+    ``tts:`` (speech backend) sections, on top of the unchanged voices/style/
+    research/output prompts. Both examples below monkeypatch the module's
+    ``_DEFAULT_CONFIG`` to a nonexistent path so the wizard's "existing
+    config" prefill is deterministic (independent of the developer machine's
+    real config file), and write the wizard output to a tmp path via
+    ``--output`` so nothing touches the real config.
+    """
+
+    def _run_wizard(self, runner: CliRunner, tmp_path: Path, answers: list[str], output_name: str = "config.yaml"):
+        """Invoke ``config init`` with a deterministic empty "existing config"."""
+        fake_default = tmp_path / "no-such-default-config.yaml"
+        output_path = tmp_path / output_name
+        with patch("tts_podcast.cli._DEFAULT_CONFIG", fake_default):
+            result = runner.invoke(
+                cli,
+                ["config", "init", "--output", str(output_path)],
+                input="\n".join(answers) + "\n",
+            )
+        return result, output_path
+
+    def test_default_run_resolves_to_gemini_llm_and_gemini_tts(self, tmp_path, monkeypatch):
+        """Accepting every default must reproduce the legacy gemini/gemini behaviour."""
+        monkeypatch.setenv("GEMINI_API_KEY", "fake-gemini-key")
+        runner = CliRunner()
+        # 27 blank answers: web(3) + llm(5) + tts-gemini(2) + language/tier(2)
+        # + duo(1) + speaker1(3) + speaker2(3) + style(3) + dialogue(1)
+        # + research(1) + output(2) = 27.
+        answers = [""] * 27
+        result, output_path = self._run_wizard(runner, tmp_path, answers)
+
+        assert result.exit_code == 0, result.output
+        assert output_path.exists()
+
+        raw = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        assert raw["llm"]["provider"] == "gemini"
+        assert raw["llm"]["api_key_env"] == "GEMINI_API_KEY"
+        assert raw["tts"]["backend"] == "gemini"
+        assert raw["gemini"]["tts_model"]
+        assert raw["gemini"]["api_key_env"] == "GEMINI_API_KEY"
+        assert "speaker1" in raw["gemini"]
+        assert "speaker2" in raw["gemini"]
+
+        cfg = load_config(output_path)
+        llm_settings = resolve_llm_settings(cfg)
+        tts_settings = resolve_tts_settings(cfg)
+        assert llm_settings.provider == "gemini"
+        assert llm_settings.api_key == "fake-gemini-key"
+        assert tts_settings.backend == "gemini"
+
+    def test_openai_provider_and_moss_backend(self, tmp_path, monkeypatch):
+        """Choosing provider=openai + backend=moss writes the matching sections."""
+        monkeypatch.setenv("OPENAI_API_KEY", "fake-openai-key")
+        runner = CliRunner()
+        answers = [
+            "",                              # user-agent
+            "",                              # http timeout
+            "",                              # cloak fallback confirm
+            "openai",                        # llm provider
+            "gpt-4o-mini",                   # text model
+            "",                              # api_key_env -> auto OPENAI_API_KEY
+            "",                              # api_base
+            "",                              # research_model
+            "moss",                          # tts backend
+            "http://localhost:8091/v1",      # moss api_base
+            "",                              # moss model (default)
+            "",                              # language
+            "",                              # service tier
+            "warm",                          # default duo (skip manual speakers)
+            "",                              # style preset
+            "",                              # style text
+            "",                              # style angle
+            "",                              # dialogue thinking level
+            "",                              # research rounds default
+            "",                              # output dir
+            "",                              # output format
+        ]
+        result, output_path = self._run_wizard(runner, tmp_path, answers)
+
+        assert result.exit_code == 0, result.output
+        raw = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+
+        assert raw["llm"]["provider"] == "openai"
+        assert raw["llm"]["text_model"] == "gpt-4o-mini"
+        assert raw["llm"]["api_key_env"] == "OPENAI_API_KEY"
+
+        assert raw["tts"]["backend"] == "moss"
+        assert raw["tts"]["moss"]["api_base"] == "http://localhost:8091/v1"
+        assert raw["tts"]["moss"]["model"]
+        # No Gemini TTS fields when the moss backend is selected.
+        assert "tts_model" not in raw["gemini"]
+        assert "api_key_env" not in raw["gemini"]
+
+        cfg = load_config(output_path)
+        llm_settings = resolve_llm_settings(cfg)
+        tts_settings = resolve_tts_settings(cfg)
+        assert llm_settings.provider == "openai"
+        assert llm_settings.api_key == "fake-openai-key"
+        assert tts_settings.backend == "moss"
+        assert tts_settings.moss["api_base"] == "http://localhost:8091/v1"
+
+    def test_unknown_tts_backend_exits_1(self, tmp_path):
+        """An invalid TTS backend answer errors out like the duo validation does."""
+        runner = CliRunner()
+        answers = [
+            "", "", "",                      # web
+            "gemini", "", "", "", "",         # llm (defaults)
+            "nosuchbackend",                  # tts backend (invalid)
+        ]
+        result, _ = self._run_wizard(runner, tmp_path, answers)
+        assert result.exit_code == 1
+        assert "nosuchbackend" in result.output

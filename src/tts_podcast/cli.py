@@ -991,7 +991,19 @@ def _prompt(label: str, default: str, **kwargs) -> str:
     help="Where to write the config file.",
 )
 def config_init(output_path: str) -> None:
-    """Interactively create or update the configuration file."""
+    """
+    Interactively create or update the configuration file.
+
+    Walks through web fetching, the provider-agnostic ``llm:`` section (text
+    generation), the pluggable ``tts:`` section (speech synthesis backend),
+    voices/duo, style & angle, dialogue thinking, research, and output
+    settings, then writes the resulting YAML. Accepting every default
+    reproduces the legacy behaviour: ``llm.provider: gemini`` and
+    ``tts.backend: gemini``, both resolving through
+    :func:`tts_podcast.settings.resolve_llm_settings` /
+    :func:`tts_podcast.settings.resolve_tts_settings` exactly as before this
+    section split existed.
+    """
     existing = _load_raw_config()
 
     def _get(section: str, key: str, fallback: str = "") -> str:
@@ -1015,15 +1027,78 @@ def config_init(output_path: str) -> None:
         default=str(existing.get("scraping", {}).get("cloak_fallback", False)).lower() == "true",
     )
 
-    click.echo("\n── Gemini ────────────────────────────────────────────────────")
-    gemini_key_env  = _prompt(
-        "Env var for Gemini API key",
-        _get("gemini", "api_key_env", "GEMINI_API_KEY"),
+    click.echo("\n── LLM (text generation) ───────────────────────────────────────")
+    llm_existing = existing.get("llm", {}) if isinstance(existing.get("llm"), dict) else {}
+    llm_provider = _prompt(
+        "Provider (gemini/openai/anthropic/ollama/...)",
+        llm_existing.get("provider") or "gemini",
+    ).strip().lower()
+    llm_text_model = _prompt(
+        "Text model",
+        llm_existing.get("text_model") or _get("gemini", "text_model", "gemini-2.5-flash"),
+    ).strip()
+    # Default key env var name follows the chosen provider: GEMINI_API_KEY for
+    # gemini, otherwise <PROVIDER>_API_KEY (e.g. OPENAI_API_KEY).
+    default_key_env = (
+        "GEMINI_API_KEY" if llm_provider == "gemini" else f"{llm_provider.upper()}_API_KEY"
     )
-    gemini_text_model = _prompt("Text model",  _get("gemini", "text_model", "gemini-3.5-flash"))
-    gemini_tts_model  = _prompt("TTS model",   _get("gemini", "tts_model", "gemini-3.1-flash-tts-preview"))
-    gemini_language   = _prompt("Podcast language", _get("gemini", "language", "French"))
-    gemini_tier       = _prompt(
+    llm_api_key_env = _prompt(
+        "Env var for the LLM API key",
+        llm_existing.get("api_key_env") or default_key_env,
+    ).strip()
+    llm_api_base = _prompt(
+        "API base URL (blank to skip; for ollama / self-hosted OpenAI-compatible endpoints)",
+        str(llm_existing.get("api_base", "")),
+        show_default=True,
+    ).strip()
+    llm_research_model = _prompt(
+        "Dedicated research model (blank = reuse text model)",
+        str(llm_existing.get("research_model", "")),
+        show_default=True,
+    ).strip()
+
+    click.echo("\n── TTS (speech synthesis) ──────────────────────────────────────")
+    tts_existing = existing.get("tts", {}) if isinstance(existing.get("tts"), dict) else {}
+    tts_backend = _prompt(
+        "Backend (gemini/moss)",
+        tts_existing.get("backend") or "gemini",
+    ).strip().lower()
+    if tts_backend not in {"gemini", "moss"}:
+        click.echo(f"[ERROR] Unknown TTS backend {tts_backend!r}. Valid backends: gemini, moss.", err=True)
+        sys.exit(1)
+
+    gemini_tts_model = ""
+    gemini_key_env = ""
+    moss_existing: dict = {}
+    if tts_backend == "gemini":
+        gemini_key_env = _prompt(
+            "Env var for the Gemini TTS API key",
+            _get("gemini", "api_key_env", "GEMINI_API_KEY"),
+        )
+        gemini_tts_model = _prompt(
+            "TTS model",
+            _get("gemini", "tts_model", "gemini-3.1-flash-tts-preview"),
+        )
+    else:
+        moss_existing = tts_existing.get("moss", {}) if isinstance(tts_existing.get("moss"), dict) else {}
+        moss_api_base = _prompt(
+            "MOSS server API base (e.g. http://localhost:8091/v1)",
+            moss_existing.get("api_base", ""),
+        ).strip()
+        moss_model = _prompt(
+            "MOSS model",
+            moss_existing.get("model") or "OpenMOSS-Team/MOSS-TTSD-v1.0",
+        ).strip()
+        moss_existing = {"api_base": moss_api_base, "model": moss_model}
+        click.echo(
+            "\nNote: add per-speaker reference audio afterward in the YAML "
+            "(tts.moss.speaker1/2.ref_audio + ref_text), and "
+            "reference_audio_field / extra_body if your server needs them — "
+            "the multi-speaker reference schema is server-specific."
+        )
+
+    gemini_language = _prompt("Podcast language", _get("gemini", "language", "French"))
+    gemini_tier = _prompt(
         "Service tier (standard/flex/priority, leave empty for default)",
         _get("gemini", "service_tier", ""),
     )
@@ -1125,15 +1200,31 @@ def config_init(output_path: str) -> None:
     )
     output_fmt = _prompt("Format (mp3/wav)",  _get("output", "format", "mp3"))
 
+    # `llm:` section: always provider + text_model + api_key_env; api_base and
+    # research_model only when the user actually supplied one.
+    llm_block: dict = {
+        "provider": llm_provider,
+        "text_model": llm_text_model,
+        "api_key_env": llm_api_key_env,
+    }
+    if llm_api_base:
+        llm_block["api_base"] = llm_api_base
+    if llm_research_model:
+        llm_block["research_model"] = llm_research_model
+
+    # `tts:` section: always backend; moss sub-block only for the moss backend.
+    tts_block: dict = {"backend": tts_backend}
+    if tts_backend == "moss":
+        tts_block["moss"] = moss_existing
+
     cfg: dict = {
         "web": {
             "user_agent": web_user_agent,
             "timeout_seconds": int(web_timeout),
         },
+        "llm": llm_block,
+        "tts": tts_block,
         "gemini": {
-            "api_key_env": gemini_key_env,
-            "text_model": gemini_text_model,
-            "tts_model": gemini_tts_model,
             "language": gemini_language,
         },
         "research": {
@@ -1149,6 +1240,12 @@ def config_init(output_path: str) -> None:
         },
         "pricing": existing.get("pricing", {}),
     }
+    # Gemini TTS backend still resolves its own key + model independently of
+    # the `llm:` section (a run can write dialogue on one provider while
+    # rendering audio through Gemini TTS).
+    if tts_backend == "gemini":
+        cfg["gemini"]["api_key_env"] = gemini_key_env
+        cfg["gemini"]["tts_model"] = gemini_tts_model
     # Voices: a chosen duo writes gemini.default_duo; otherwise the manual
     # speaker1/speaker2 blocks collected above are written verbatim.
     if default_duo_choice:
@@ -1189,10 +1286,11 @@ def config_init(output_path: str) -> None:
         encoding="utf-8",
     )
     click.echo(f"\nConfiguration written to {dest}")
-    click.echo(
-        f"\nMake sure this environment variable is set before running:\n"
-        f"  export {gemini_key_env}=<your Gemini API key>"
-    )
+    env_vars = {llm_api_key_env}
+    if tts_backend == "gemini":
+        env_vars.add(gemini_key_env)
+    exports = "\n".join(f"  export {name}=<your {name} value>" for name in sorted(env_vars))
+    click.echo(f"\nMake sure these environment variable(s) are set before running:\n{exports}")
 
 
 @config_group.command("show")
