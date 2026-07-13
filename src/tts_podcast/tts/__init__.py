@@ -64,9 +64,10 @@ def resolve_tts_backend(cfg: dict[str, "Any"], gemini_cfg: dict) -> TtsBackend:
         return GeminiTtsBackend(gemini_cfg)
 
     if settings.backend == "moss":
-        raise click.BadParameter(
-            "The 'moss' TTS backend is not available in this build."
-        )
+        # Lazy import: keep httpx off the import path unless moss is selected.
+        from tts_podcast.tts.moss_backend import MossTtsBackend
+
+        return MossTtsBackend(settings.moss, gemini_cfg)
 
     raise click.BadParameter(
         f"Unknown tts.backend {settings.backend!r}. Valid backends: gemini, moss."
