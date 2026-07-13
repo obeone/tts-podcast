@@ -1,7 +1,7 @@
 [project]
 name = "tts-podcast"
 version = "0.8.0"
-description = "Turn any web article into a two-voice podcast via Gemini TTS, with iterative Google Search enrichment."
+description = "Turn any web article into a two-voice podcast: provider-agnostic LLM scripting (LiteLLM) with pluggable Gemini or MOSS-TTSD speech, and iterative Google Search enrichment."
 readme = "README.md"
 requires-python = ">=3.13"
 authors = [
