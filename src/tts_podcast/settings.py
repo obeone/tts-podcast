@@ -134,3 +134,47 @@ def resolve_llm_settings(cfg: dict[str, Any]) -> LlmSettings:
         temperature=temperature,
         extra_headers=extra_headers or None,
     )
+
+
+@dataclass
+class TtsSettings:
+    """
+    Effective settings for the pluggable speech backend.
+
+    Attributes
+    ----------
+    backend : str
+        Which TTS backend renders audio — ``"gemini"`` (default) or
+        ``"moss"``.
+    moss : dict[str, Any]
+        The ``tts.moss`` sub-config (endpoint, model, per-speaker reference
+        audio, sample rate, …).  Empty dict when unset / not the active
+        backend.
+    """
+
+    backend: str
+    moss: dict[str, Any]
+
+
+def resolve_tts_settings(cfg: dict[str, Any]) -> TtsSettings:
+    """
+    Resolve the effective TTS backend selection from the config.
+
+    The new ``tts:`` section selects the backend; when it is absent the backend
+    defaults to ``"gemini"`` so legacy configs (which only carry the ``gemini:``
+    block) keep rendering through Gemini TTS untouched.
+
+    Parameters
+    ----------
+    cfg : dict
+        The fully loaded, env-resolved configuration mapping.
+
+    Returns
+    -------
+    TtsSettings
+        Typed backend selection plus the raw ``tts.moss`` sub-config.
+    """
+    tts = cfg.get("tts", {}) or {}
+    backend = str(tts.get("backend") or "gemini").strip().lower()
+    moss = tts.get("moss", {}) or {}
+    return TtsSettings(backend=backend, moss=moss)

@@ -87,7 +87,7 @@ class TestStyleFlagsWiring:
         with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
              patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()) as mock_research, \
              patch("tts_podcast.cli.generate_dialogue", return_value=[]), \
-             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+             patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[]):
             result = runner.invoke(
                 cli,
                 [
@@ -120,7 +120,7 @@ class TestStyleFlagsWiring:
         with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
              patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()), \
              patch("tts_podcast.cli.generate_dialogue", side_effect=_capture_generate), \
-             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+             patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[]):
             result = runner.invoke(
                 cli,
                 [
@@ -152,7 +152,7 @@ class TestStyleFlagsWiring:
         with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
              patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()), \
              patch("tts_podcast.cli.generate_dialogue", side_effect=_capture), \
-             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+             patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[]):
             result = runner.invoke(
                 cli,
                 [
@@ -185,7 +185,7 @@ class TestStyleFlagsWiring:
         with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
              patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()), \
              patch("tts_podcast.cli.generate_dialogue", side_effect=_capture), \
-             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+             patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[]):
             result = runner.invoke(
                 cli,
                 [
@@ -213,7 +213,7 @@ class TestStyleFlagsWiring:
         with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
              patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()), \
              patch("tts_podcast.cli.generate_dialogue", side_effect=_capture), \
-             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+             patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[]):
             result = runner.invoke(
                 cli,
                 [
@@ -256,7 +256,7 @@ class TestStyleFlagsWiring:
         with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
              patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()), \
              patch("tts_podcast.cli.generate_dialogue", side_effect=_capture), \
-             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+             patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[]):
             result = runner.invoke(
                 cli,
                 [
@@ -300,7 +300,7 @@ class TestReportOptIn:
             patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]),
             patch("tts_podcast.cli._check_ffmpeg"),
             patch("tts_podcast.cli.generate_dialogue", return_value=[]),
-            patch("tts_podcast.cli.generate_audio_chunks", return_value=[b"pcm"]),
+            patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[b"pcm"]),
             patch("tts_podcast.cli.export_audio", return_value=Path("episode.mp3")),
             patch("tts_podcast.cli.generate_report", return_value=Path("tts_x")),
         )
@@ -336,7 +336,7 @@ class TestOutputFile:
             patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]),
             patch("tts_podcast.cli._check_ffmpeg"),
             patch("tts_podcast.cli.generate_dialogue", return_value=[]),
-            patch("tts_podcast.cli.generate_audio_chunks", return_value=[b"pcm"]),
+            patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[b"pcm"]),
         )
 
     def test_bare_name_routed_to_output_dir(self, cli_env):
@@ -421,7 +421,7 @@ class TestDuoAuto:
             patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]),
             patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()),
             patch("tts_podcast.cli.generate_dialogue", return_value=[]),
-            patch("tts_podcast.cli.generate_audio_chunks", return_value=[]),
+            patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[]),
         )
 
     def test_generate_duo_called_when_auto(self, cli_env):

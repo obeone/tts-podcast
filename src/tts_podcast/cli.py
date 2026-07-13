@@ -49,7 +49,7 @@ from tts_podcast.research import conduct_research
 from tts_podcast.settings import resolve_llm_settings
 from tts_podcast.style_presets import STYLE_PRESETS
 from tts_podcast.token_tracker import TokenTracker
-from tts_podcast.tts_generator import generate_audio_chunks
+from tts_podcast.tts import resolve_tts_backend
 from tts_podcast.user_agent import BROWSER_USER_AGENT
 from tts_podcast.web_scraper import scrape_urls
 
@@ -839,14 +839,20 @@ def run(
 
         # 2e. TTS synthesis (skipped when --no-audio)
         pcm_chunks: list[bytes] = []
+        tts_backend = None
         if not no_audio:
+            try:
+                tts_backend = resolve_tts_backend(cfg, gemini_cfg)
+            except click.BadParameter as exc:
+                progress.stop()
+                click.echo(f"[ERROR] {exc.format_message()}", err=True)
+                sys.exit(1)
             tts_task = progress.add_task(
                 f"[cyan]TTS synthesis[/cyan] ({len(chunks)} chunk(s))…",
                 total=len(chunks),
             )
-            pcm_chunks = generate_audio_chunks(
+            pcm_chunks = tts_backend.synthesize(
                 chunks,
-                gemini_cfg,
                 token_tracker=tracker,
                 progress=progress,
                 task_id=tts_task,
@@ -869,8 +875,10 @@ def run(
     stem = _build_output_stem(identifiers)
     saved: Path | None = None
     if not no_audio:
+        # tts_backend is set whenever we reach here (same `not no_audio` guard).
+        audio_format = tts_backend.audio_format
         if to_stdout:
-            data = encode_audio(pcm_chunks, fmt=output_fmt)
+            data = encode_audio(pcm_chunks, fmt=output_fmt, audio_format=audio_format)
             sys.stdout.buffer.write(data)
             sys.stdout.buffer.flush()
             logger.info(
@@ -881,7 +889,9 @@ def run(
                 output_file, output_dir, stem, output_fmt
             )
             logger.info("Exporting audio to %s…", out_path)
-            saved = export_audio(pcm_chunks, out_path, fmt=out_fmt)
+            saved = export_audio(
+                pcm_chunks, out_path, fmt=out_fmt, audio_format=audio_format
+            )
             _status(f"Podcast saved to: {saved}")
     else:
         if output_file:
