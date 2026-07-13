@@ -1,0 +1,10 @@
+apiVersion: v2
+name: moss-ttsd
+description: MOSS-TTSD v1.0 end-to-end TTS HTTP server (SGLang) on NVIDIA GPUs
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+dependencies:
+  - name: common
+    repository: https://bjw-s-labs.github.io/helm-charts
+    version: 5.0.1
