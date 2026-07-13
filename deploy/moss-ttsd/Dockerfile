@@ -97,10 +97,14 @@ RUN git clone --depth 1 --branch ${SGLANG_REF} ${SGLANG_REPO} /app/sglang || \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python ${VENV_MOSS} -r requirements.txt
 
-# flash-attn compiles CUDA kernels; --no-build-isolation lets it see the torch
-# already in VENV_MOSS. MAX_JOBS bounds parallel nvcc to avoid OOM on the builder.
+# flash-attn compiles CUDA kernels from source (no prebuilt wheel exists for
+# this torch/cuda/python combo). --no-build-isolation lets it see the torch
+# already in VENV_MOSS. Its heavy kernels can spike to ~10-20 GB of RAM *per*
+# nvcc job, so MAX_JOBS is kept low to stay under the builder's memory even
+# though plenty of CPUs are free; MAX_JOBS=4 triggered the OOM killer.
+ARG FLASH_ATTN_MAX_JOBS=2
 RUN --mount=type=cache,target=/root/.cache/uv \
-    MAX_JOBS=4 uv pip install --python ${VENV_MOSS} flash-attn --no-build-isolation
+    MAX_JOBS=${FLASH_ATTN_MAX_JOBS} uv pip install --python ${VENV_MOSS} flash-attn --no-build-isolation
 
 # huggingface_hub CLI for weight download in the entrypoint.
 RUN --mount=type=cache,target=/root/.cache/uv \
