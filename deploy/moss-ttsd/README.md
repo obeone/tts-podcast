@@ -28,6 +28,11 @@ deploy/moss-ttsd/
 - **Server.** SGLang's native HTTP server on port `30000`
   (`sglang serve --model-path <fused> --delay-pattern --trust-remote-code`).
   `/health` reports readiness once the model is loaded.
+- **Two virtualenvs.** SGLang is a separate OpenMOSS fork
+  (`OpenMOSS/sglang`, branch `moss-ttsd-v1.0-with-cat`), cloned on its own and
+  installed in `/opt/venv-sglang`. MOSS-TTSD's own deps (download + fusion) live
+  in `/opt/venv-moss`. They are kept apart because upstream pins conflicting
+  torch versions; `entrypoint.sh` calls each venv by absolute path.
 
 ## Build
 
@@ -40,10 +45,11 @@ docker buildx build \
   deploy/moss-ttsd
 ```
 
-Pin `MOSS_TTSD_REF` to a tag or commit for reproducible builds. `CUDA_IMAGE`,
-`PYTHON_VERSION` and `TORCH_CUDA` are also overridable build args. `TORCH_CUDA`
-(default `cu128`) selects the PyTorch CUDA wheel index; keep it in sync with
-`CUDA_IMAGE` and the `torch` pin in the upstream `requirements.txt`.
+Pin `MOSS_TTSD_REF` (and `SGLANG_REF`) to tags or commits for reproducible
+builds. `CUDA_IMAGE`, `PYTHON_VERSION`, `TORCH_CUDA`, `SGLANG_REPO` and
+`SGLANG_REF` are also overridable build args. `TORCH_CUDA` (default `cu128`)
+selects the PyTorch CUDA wheel index; keep it in sync with `CUDA_IMAGE` and the
+`torch` pin in the upstream `requirements.txt`.
 
 ## Deploy
 

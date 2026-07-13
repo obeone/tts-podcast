@@ -2,14 +2,21 @@
 
 # MOSS-TTSD v1.0 HTTP inference server.
 #
-# The container clones the upstream MOSS-TTSD repository (which bundles the
-# custom SGLang fork used for end-to-end serving), installs its dependencies,
-# and exposes the native SGLang HTTP server on port 30000.
+# The container clones the upstream MOSS-TTSD repo (fuse script + weights glue)
+# and, separately, the OpenMOSS SGLang fork used for end-to-end serving, then
+# exposes the native SGLang HTTP server on port 30000.
+#
+# Two virtualenvs on purpose: upstream ships MOSS-TTSD and its SGLang fork with
+# conflicting dependency pins (different torch), so they are installed side by
+# side rather than resolved together:
+#   * VENV_MOSS   -> requirements.txt + flash-attn + hf CLI  (download + fusion)
+#   * VENV_SGLANG -> ./sglang/python[all]                    (serving)
+# entrypoint.sh calls each venv by absolute path.
 #
 # Model weights are NOT baked into the image. They are downloaded and fused at
 # first start by entrypoint.sh into a persistent volume (see the Helm chart).
-# This keeps the image reasonably sized (CUDA + torch + deps only) and lets the
-# multi-GB checkpoints live on a PVC that survives restarts and rollouts.
+# This keeps the image to CUDA + deps only and lets the multi-GB checkpoints
+# live on a PVC that survives restarts and rollouts.
 #
 # GPU: an NVIDIA CUDA GPU is required. flash-attn is compiled against nvcc, so
 # the build uses a CUDA *devel* base. There is no realistic CPU path.
@@ -19,17 +26,20 @@
 # MUST match the toolkit torch was built against: requirements.txt pins
 # torch==2.9.1+cu128, i.e. CUDA 12.8. A mismatch (e.g. 12.4) makes flash-attn
 # compile against the wrong nvcc. Bump this in lockstep with the torch pin.
-# Ubuntu 22.04 is a comfort default; torch wheels are manylinux, so 24.04
-# works too. Override the whole base with --build-arg CUDA_IMAGE=...
 # Ubuntu 24.04 LTS: supported to 2029, and ships python3.12 natively (no PPA).
+# Override the whole base with --build-arg CUDA_IMAGE=...
 ARG CUDA_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
 
 FROM ${CUDA_IMAGE}
 
-# Upstream ref to clone. Pin to a tag/commit for reproducible builds; override
-# at build time with --build-arg MOSS_TTSD_REF=<tag-or-sha>.
+# Upstream refs to clone. Pin to tags/commits for reproducible builds; override
+# at build time with --build-arg MOSS_TTSD_REF=<tag-or-sha> etc.
 ARG MOSS_TTSD_REF=main
 ARG MOSS_TTSD_REPO=https://github.com/OpenMOSS/MOSS-TTSD.git
+# SGLang is a separate OpenMOSS fork on a MOSS-TTSD-specific branch, not part of
+# the MOSS-TTSD repo and not a submodule. It must be cloned explicitly.
+ARG SGLANG_REPO=https://github.com/OpenMOSS/sglang.git
+ARG SGLANG_REF=moss-ttsd-v1.0-with-cat
 ARG PYTHON_VERSION=3.12
 # CUDA wheel variant for torch. The `+cu128` build lives on PyTorch's index,
 # not PyPI, so uv is pointed there below. Keep in sync with CUDA_IMAGE.
@@ -38,7 +48,6 @@ ARG TORCH_CUDA=cu128
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=0 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Keep apt's downloaded packages so the BuildKit cache mount below is effective.
@@ -47,7 +56,7 @@ RUN rm -f /etc/apt/apt.conf.d/docker-clean; \
 
 # System dependencies (python3.12 is the Ubuntu 24.04 system interpreter):
 #   - python3.12 + venv/dev: runtime and headers for building extensions
-#   - build-essential, ninja-build, git: compile flash-attn / clone the repo
+#   - build-essential, ninja-build, git: compile flash-attn / clone the repos
 #   - ffmpeg, libsndfile1: audio I/O for the TTS pipeline
 #   - ca-certificates, curl: TLS + HEALTHCHECK probe
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -58,48 +67,50 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ffmpeg libsndfile1 \
         python${PYTHON_VERSION} python${PYTHON_VERSION}-venv python${PYTHON_VERSION}-dev
 
-# uv: the project's package manager. Faster resolver + install, and the
-# repo standard. Used for every Python install below via `uv pip`.
+# uv: the project's package manager. Faster resolver + install, and the repo
+# standard. Used for every Python install below via `uv pip --python <venv>`.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# Isolated virtualenv driven by uv, on PATH so later RUN steps and the
-# entrypoint resolve the right python. VIRTUAL_ENV lets `uv pip` target it
-# without an explicit --python flag.
-ENV VENV=/opt/venv \
-    VIRTUAL_ENV=/opt/venv \
+# Two separate virtualenvs (see header). Neither is put on PATH: the entrypoint
+# and the RUN steps below address them by absolute path to avoid cross-talk.
+ENV VENV_MOSS=/opt/venv-moss \
+    VENV_SGLANG=/opt/venv-sglang \
     UV_LINK_MODE=copy \
     UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/${TORCH_CUDA} \
     UV_INDEX_STRATEGY=unsafe-best-match
-RUN uv venv --python python${PYTHON_VERSION} ${VENV}
-ENV PATH="${VENV}/bin:${PATH}"
+RUN uv venv --python python${PYTHON_VERSION} ${VENV_MOSS} && \
+    uv venv --python python${PYTHON_VERSION} ${VENV_SGLANG}
 
 WORKDIR /app
 
-# Clone the upstream repo at the pinned ref. --depth 1 keeps the layer small;
-# the bundled SGLang fork lives under ./sglang and the fuse script under
-# ./scripts, both needed at build (install) and runtime (fusion).
+# Clone MOSS-TTSD (fuse script under ./scripts) and the SGLang fork (./sglang).
+# --depth 1 keeps layers small; fall back to a full clone + checkout when the
+# ref is a bare commit sha that --branch can't take.
 RUN git clone --depth 1 --branch ${MOSS_TTSD_REF} ${MOSS_TTSD_REPO} /app || \
     (git clone ${MOSS_TTSD_REPO} /app && git -C /app checkout ${MOSS_TTSD_REF})
+RUN git clone --depth 1 --branch ${SGLANG_REF} ${SGLANG_REPO} /app/sglang || \
+    (git clone ${SGLANG_REPO} /app/sglang && git -C /app/sglang checkout ${SGLANG_REF})
 
-# Python dependencies. torch must land before flash-attn (flash-attn's build
-# imports torch). uv cache mount keeps wheels across rebuilds.
+# --- VENV_MOSS: inference / download / fusion deps -------------------------
+# torch must land before flash-attn (flash-attn's build imports torch). uv
+# cache mount keeps wheels across rebuilds.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install -r requirements.txt
-
-# SGLang fork bundled in the repo (provides the `sglang serve` entrypoint used
-# for MOSS-TTSD end-to-end inference). [all] pulls the serving extras.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install './sglang/python[all]'
+    uv pip install --python ${VENV_MOSS} -r requirements.txt
 
 # flash-attn compiles CUDA kernels; --no-build-isolation lets it see the torch
-# already installed above. MAX_JOBS bounds parallel nvcc to avoid OOM on the
-# builder.
+# already in VENV_MOSS. MAX_JOBS bounds parallel nvcc to avoid OOM on the builder.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    MAX_JOBS=4 uv pip install flash-attn --no-build-isolation
+    MAX_JOBS=4 uv pip install --python ${VENV_MOSS} flash-attn --no-build-isolation
 
 # huggingface_hub CLI for weight download in the entrypoint.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install 'huggingface_hub[cli]'
+    uv pip install --python ${VENV_MOSS} 'huggingface_hub[cli]'
+
+# --- VENV_SGLANG: the serving engine ---------------------------------------
+# OpenMOSS SGLang fork; [all] pulls the serving extras and provides the
+# `sglang serve` entrypoint used for MOSS-TTSD end-to-end inference.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python ${VENV_SGLANG} './sglang/python[all]'
 
 # --- Runtime configuration -------------------------------------------------
 # MODEL_DIR: persistent location for the fused model (mounted from a PVC).
