@@ -255,17 +255,18 @@ omitted, so existing configs render exactly as before.
 tts:
   backend: moss                      # gemini | moss
   moss:
-    api_base: http://localhost:8091/v1
-    model: OpenMOSS-Team/MOSS-TTSD-v1.0
+    api_base: http://localhost:8091
 ```
 
 `moss` talks to a self-hosted [MOSS-TTSD](https://github.com/OpenMOSS/MOSS-TTSD)
-server (an 8B spoken-dialogue model) over an OpenAI-compatible
-`/v1/audio/speech` endpoint, for example served with vLLM-Omni or
-SGLang-Omni. The model itself runs on your own GPU box; tts-podcast is only
-the HTTP client. See [`config.example.yaml`](config.example.yaml) for the
-full set of `tts.moss` options, including per-speaker voice cloning from a
-reference clip.
+server (an 8B spoken-dialogue model), served by the project's own SGLang fork.
+That server exposes SGLang's native API, not an OpenAI-compatible one, so the
+client POSTs to `{api_base}/generate` (no `/v1` suffix on `api_base`) and gets
+back a base64-encoded WAV file, which it decodes locally, reading the real
+sample rate off the WAV header. The model itself runs on your own GPU box;
+tts-podcast is only the HTTP client. See [`config.example.yaml`](config.example.yaml)
+for the full set of `tts.moss` options, including per-speaker voice cloning
+from a reference clip.
 
 ---
 

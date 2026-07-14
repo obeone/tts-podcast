@@ -41,15 +41,16 @@ web:
 #   backend: gemini            # gemini | moss
 #   # Settings for the self-hosted MOSS-TTSD backend (only read when
 #   # backend: moss). MOSS-TTSD is an 8B dialogue model you run yourself behind
-#   # an OpenAI-compatible /v1/audio/speech endpoint (vLLM-Omni or SGLang-Omni);
+#   # the *native* SGLang API of the project's own `OpenMOSS/sglang` fork — not
+#   # an OpenAI-compatible endpoint. The client POSTs to `{api_base}/generate`;
 #   # this tool is only the HTTP client.
 #   moss:
-#     api_base: http://localhost:8091/v1
+#     api_base: http://localhost:8091      # server root, no /v1 suffix
 #     # api_key_env: MOSS_API_KEY          # omit for an open local server
-#     model: OpenMOSS-Team/MOSS-TTSD-v1.0
-#     # sample_rate: 24000                 # PCM rate the server emits
 #     # max_workers: 2                     # concurrent requests to the server
 #     # timeout_seconds: 300               # per-request timeout (MOSS is slow)
+#     # The sample rate is read from the WAV header the server returns for
+#     # each chunk, so it is not configured here.
 #     # Voice cloning: a reference clip + its transcript per speaker. speaker1
 #     # maps to [S1], speaker2 to [S2]. Omit to let MOSS pick voices (not stable
 #     # across runs).
@@ -59,12 +60,18 @@ web:
 #     speaker2:
 #       ref_audio: /path/to/host2_reference.wav
 #       ref_text: "Transcript of the host 2 reference clip."
-#     # The exact multi-speaker request schema is undocumented for MOSS-TTSD
-#     # v1.0 — verify these against your running server:
-#     # reference_audio_field: audio_path   # some servers use "audio" (base64 data URI)
+#     # ref_prefix_mode: tagged             # tagged (default, prepends each
+#     #                                     # reference transcript behind its
+#     #                                     # [Sn] tag) | none (no prefix)
 #     # strip_delivery_cues: true           # drop (cue)/[tag] markers MOSS can't use
+#     # Sampling knobs forwarded inside the request's nested `sampling_params`:
+#     # temperature: 0.7
+#     # top_p: 0.9
+#     # top_k: 40
+#     # repetition_penalty: 1.1
+#     # max_new_tokens: 2048
 #     # extra_body:                         # server-specific passthrough fields
-#     #   top_p: 0.8
+#     #   some_custom_field: value
 
 gemini:
   # Name of the environment variable holding your Gemini API key
