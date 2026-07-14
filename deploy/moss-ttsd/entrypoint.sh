@@ -49,12 +49,24 @@ if [[ -f "${MODEL_DIR}/config.json" ]]; then
 else
     log "Fused model not found. Downloading weights (this takes a while)..."
 
-    # HF_TOKEN, when provided (K8s secret), authenticates gated/private repos.
-    # hf CLI picks it up from the environment automatically.
+    # HF_TOKEN, when provided (K8s secret), authenticates gated/private repos;
+    # huggingface_hub picks it up from the environment automatically.
+    #
+    # We call snapshot_download() directly rather than a console script: the
+    # CLI has been renamed (`huggingface-cli` -> `hf`), and the deprecated
+    # `huggingface-cli download` now exits non-zero without downloading
+    # anything, which `set -e` turns into a silent CrashLoopBackOff. The Python
+    # API is stable and immune to that churn.
     hf_download() {
         local repo="$1" dest="$2"
         log "Downloading ${repo} -> ${dest}"
-        "${VENV_MOSS}/bin/huggingface-cli" download "${repo}" --local-dir "${dest}" --quiet
+        "${VENV_MOSS}/bin/python" - "${repo}" "${dest}" <<'PY'
+import sys
+
+from huggingface_hub import snapshot_download
+
+snapshot_download(repo_id=sys.argv[1], local_dir=sys.argv[2])
+PY
     }
 
     hf_download "${MOSS_TTSD_HF_REPO}" "${TTSD_DIR}"

@@ -114,9 +114,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python ${VENV_MOSS} "${FLASH_ATTN_WHEEL}"
 
-# huggingface_hub CLI for weight download in the entrypoint.
+# huggingface_hub for the weight download in the entrypoint. The [cli] extra is
+# deliberately NOT installed: the entrypoint calls snapshot_download() through
+# the stable Python API rather than a console script, because the CLI was
+# renamed (`huggingface-cli` -> `hf`) and the old name now exits non-zero
+# without downloading anything.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python ${VENV_MOSS} 'huggingface_hub[cli]'
+    uv pip install --python ${VENV_MOSS} 'huggingface_hub'
 
 # --- VENV_SGLANG: the serving engine ---------------------------------------
 # OpenMOSS SGLang fork; [all] pulls the serving extras and provides the
