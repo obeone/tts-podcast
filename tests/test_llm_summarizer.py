@@ -10,18 +10,20 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
+from tts_podcast.llm_client import LlmResult
 from tts_podcast.llm_summarizer import (
     DialogueChunk,
     _audio_tags_enabled,
     _build_prompt,
-    _build_thinking_config,
     _has_speaker_turns,
+    _reasoning_effort,
     generate_dialogue,
 )
+from tts_podcast.settings import LlmSettings
 from tts_podcast.style_presets import STYLE_PRESETS
 
 
@@ -66,40 +68,42 @@ Alex: The language team says performance improved by 40 percent.
 Jordan: That's huge for systems programming.
 """
 
+LLM_SETTINGS = LlmSettings(
+    provider="gemini",
+    text_model="gemini-2.5-flash",
+    research_model=None,
+    api_key="test-api-key",
+    api_base=None,
+    temperature=None,
+    extra_headers=None,
+)
 
-def _mock_genai_response(text: str):
+
+def _llm_result(text: str, input_tokens: int = 0, output_tokens: int = 0) -> LlmResult:
     """
-    Build a mock genai module whose Client.models.generate_content returns text.
+    Build a neutral :class:`~tts_podcast.llm_client.LlmResult` for mocking ``complete``.
 
     Parameters
     ----------
     text : str
         The dialogue text the mock should return.
+    input_tokens : int, optional
+        Prompt token count to report.
+    output_tokens : int, optional
+        Completion token count to report.
 
     Returns
     -------
-    MagicMock
-        A mock that mimics the genai module interface.
+    LlmResult
+        A result carrying *text* and no grounding.
     """
-    mock_response = MagicMock()
-    mock_response.text = text
-
-    mock_model = MagicMock()
-    mock_model.generate_content.return_value = mock_response
-
-    mock_client_instance = MagicMock()
-    mock_client_instance.models = mock_model
-
-    mock_genai = MagicMock()
-    mock_genai.Client.return_value = mock_client_instance
-
-    return mock_genai
+    return LlmResult(text=text, input_tokens=input_tokens, output_tokens=output_tokens, grounding=None)
 
 
-def _captured_prompt(mock_genai) -> str:
-    """Return the prompt string that was sent to the mocked Gemini client."""
-    call = mock_genai.Client.return_value.models.generate_content.call_args
-    return call.kwargs.get("contents") or call.args[1]
+def _captured_prompt(mock_complete) -> str:
+    """Return the prompt string that was sent to the mocked ``complete`` call."""
+    call = mock_complete.call_args
+    return call.kwargs["prompt"]
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +116,8 @@ class TestGenerateDialogue:
 
     def test_returns_non_empty_list_of_chunks(self):
         """generate_dialogue returns at least one DialogueChunk on success."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+        with patch("tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
         assert isinstance(chunks, list)
         assert len(chunks) > 0
@@ -123,46 +125,40 @@ class TestGenerateDialogue:
 
     def test_chunks_contain_text(self):
         """Every returned DialogueChunk has non-empty text."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+        with patch("tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
         for chunk in chunks:
             assert chunk.text.strip() != ""
 
     def test_chunks_have_sequential_indices(self):
         """DialogueChunk objects are indexed sequentially from 0."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+        with patch("tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
         for expected_index, chunk in enumerate(chunks):
             assert chunk.index == expected_index
 
-    def test_genai_client_called_with_correct_model(self):
-        """Gemini client is called with the model specified in gemini_cfg."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+    def test_complete_called_with_correct_model_and_key(self):
+        """complete() is called with the model/key resolved from llm_cfg."""
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+        call_kwargs = mock_complete.call_args.kwargs
+        assert call_kwargs.get("model") == "gemini/gemini-2.5-flash"
+        assert call_kwargs.get("api_key") == "test-api-key"
 
-        mock_genai.Client.assert_called_once_with(api_key="test-api-key")
-        call_kwargs = mock_genai.Client.return_value.models.generate_content.call_args
-        assert call_kwargs.kwargs.get("model") == "gemini-2.5-flash"
+    def test_passes_max_tokens(self):
+        """generate_dialogue must pass max_tokens=8192 to complete()."""
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
-    def test_passes_max_output_tokens(self):
-        """generate_dialogue must pass max_output_tokens=8192 to the Gemini API."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
-
-        call_kwargs = mock_genai.Client.return_value.models.generate_content.call_args.kwargs
-        config_obj = call_kwargs.get("config")
-        assert config_obj is not None
-        assert config_obj.max_output_tokens == 8192
+        call_kwargs = mock_complete.call_args.kwargs
+        assert call_kwargs.get("max_tokens") == 8192
 
 
 class TestDurationConfig:
@@ -170,12 +166,12 @@ class TestDurationConfig:
 
     def test_default_duration_appears_in_prompt(self):
         """With no dialogue config, defaults (8 min target, 150 wpm) show up."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
-
-        prompt = _captured_prompt(mock_genai)
+        prompt = _captured_prompt(mock_complete)
         # Target word count = 8 * 150 = 1200
         assert "1200" in prompt
         # Duration label
@@ -187,12 +183,12 @@ class TestDurationConfig:
             **GEMINI_CFG,
             "dialogue": {"target_duration_minutes": 12, "words_per_minute": 150},
         }
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
+            generate_dialogue(SAMPLE_ARTICLES, cfg, LLM_SETTINGS, "Alex", "Jordan")
 
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
-
-        prompt = _captured_prompt(mock_genai)
+        prompt = _captured_prompt(mock_complete)
         # 12 * 150 = 1800
         assert "1800" in prompt
         # Default bounds: 70% (8.4 min → ~1260 words) and 150% (18 min → 2700 words)
@@ -210,12 +206,12 @@ class TestDurationConfig:
                 "words_per_minute": 140,
             },
         }
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
+            generate_dialogue(SAMPLE_ARTICLES, cfg, LLM_SETTINGS, "Alex", "Jordan")
 
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
-
-        prompt = _captured_prompt(mock_genai)
+        prompt = _captured_prompt(mock_complete)
         # 5 * 140 = 700, 10 * 140 = 1400, 20 * 140 = 2800
         assert "700" in prompt
         assert "1400" in prompt
@@ -228,26 +224,26 @@ class TestResearchNotesInjection:
 
     def test_no_research_section_when_notes_empty(self):
         """No 'Complementary research' header appears when research_notes is empty."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
-
-        prompt = _captured_prompt(mock_genai)
+        prompt = _captured_prompt(mock_complete)
         assert "Complementary research" not in prompt
 
     def test_research_notes_appear_in_prompt(self):
         """When research_notes is supplied, its text appears in the prompt before Articles."""
         notes = "### Research round 1\n\n- Background fact A (https://src/a)\n- Recent dev B (https://src/b)"
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
             generate_dialogue(
-                SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan",
+                SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan",
                 research_notes=notes,
             )
 
-        prompt = _captured_prompt(mock_genai)
+        prompt = _captured_prompt(mock_complete)
         assert "Complementary research" in prompt
         assert "Background fact A" in prompt
         assert "Recent dev B" in prompt
@@ -255,15 +251,15 @@ class TestResearchNotesInjection:
 
     def test_whitespace_only_notes_treated_as_empty(self):
         """A whitespace-only research_notes string is treated as no-research."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
             generate_dialogue(
-                SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan",
+                SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan",
                 research_notes="   \n\t  ",
             )
 
-        prompt = _captured_prompt(mock_genai)
+        prompt = _captured_prompt(mock_complete)
         assert "Complementary research" not in prompt
 
 
@@ -397,10 +393,9 @@ class TestSpeakerOverlay:
         }
         original_p1 = cfg["speaker1"]["personality"]
         original_p2 = cfg["speaker2"]["personality"]
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
 
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
+        with patch("tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)):
+            generate_dialogue(SAMPLE_ARTICLES, cfg, LLM_SETTINGS, "Alex", "Jordan")
 
         assert cfg["speaker1"]["personality"] == original_p1
         assert cfg["speaker2"]["personality"] == original_p2
@@ -565,69 +560,55 @@ class TestNoFlagsByteIdentical:
 
 
 # ---------------------------------------------------------------------------
-# Tests for _build_thinking_config
+# Tests for _reasoning_effort
 # ---------------------------------------------------------------------------
 
 
-class TestBuildThinkingConfig:
-    """Unit tests for the _build_thinking_config helper."""
+class TestReasoningEffort:
+    """Unit tests for the _reasoning_effort helper."""
 
-    def test_3x_model_valid_level_returns_thinking_config(self):
-        """3.x model + valid thinking_level returns ThinkingConfig with that level."""
-        result = _build_thinking_config("gemini-3.5-flash", "low", None)
-        assert result is not None
-        # The SDK converts the string to a ThinkingLevel enum; compare via .value.
-        assert result.thinking_level.value == "LOW"
+    def test_valid_thinking_level_returned_verbatim(self):
+        """A valid thinking_level maps 1:1 (already lowercase)."""
+        assert _reasoning_effort({"thinking_level": "low"}) == "low"
 
-    def test_3x_model_level_normalised_lowercase(self):
-        """thinking_level is accepted case-insensitively (SDK normalises to enum)."""
-        result = _build_thinking_config("gemini-3.5-flash", "LOW", None)
-        assert result is not None
-        assert result.thinking_level.value == "LOW"
+    def test_thinking_level_normalised_lowercase(self):
+        """thinking_level is accepted case-insensitively and normalised to lowercase."""
+        assert _reasoning_effort({"thinking_level": "LOW"}) == "low"
 
-    def test_3x_model_invalid_level_returns_none(self):
-        """3.x model + invalid thinking_level logs a warning and returns None."""
-        result = _build_thinking_config("gemini-3.5-flash", "turbo", None)
-        assert result is None
+    def test_all_valid_levels_accepted(self):
+        """All four valid thinking levels are accepted."""
+        for level in ("minimal", "low", "medium", "high"):
+            assert _reasoning_effort({"thinking_level": level}) == level
 
-    def test_25_model_budget_zero_returns_thinking_config(self):
-        """2.5 model + thinking_budget=0 returns ThinkingConfig with budget 0."""
-        result = _build_thinking_config("gemini-2.5-flash", None, 0)
-        assert result is not None
-        assert result.thinking_budget == 0
+    def test_invalid_level_falls_through_to_none(self):
+        """An invalid thinking_level logs a warning and falls through to None
+        when no thinking_budget is set."""
+        assert _reasoning_effort({"thinking_level": "turbo"}) is None
 
-    def test_25_model_budget_positive(self):
-        """2.5 model + positive thinking_budget returns ThinkingConfig."""
-        result = _build_thinking_config("gemini-2.5-flash", None, 1024)
-        assert result is not None
-        assert result.thinking_budget == 1024
+    def test_invalid_level_falls_through_to_budget(self):
+        """An invalid thinking_level falls through to the thinking_budget mapping
+        when both keys are set."""
+        assert _reasoning_effort({"thinking_level": "turbo", "thinking_budget": 0}) == "minimal"
+
+    def test_budget_zero_returns_minimal(self):
+        """thinking_budget=0 maps to 'minimal'."""
+        assert _reasoning_effort({"thinking_budget": 0}) == "minimal"
+
+    def test_budget_positive_returns_low(self):
+        """Any positive thinking_budget maps to 'low'."""
+        assert _reasoning_effort({"thinking_budget": 1024}) == "low"
 
     def test_nothing_set_returns_none(self):
-        """Neither level nor budget set returns None for any model."""
-        assert _build_thinking_config("gemini-3.5-flash", None, None) is None
-        assert _build_thinking_config("gemini-2.5-flash", None, None) is None
-
-    def test_3x_model_only_budget_set_returns_none(self):
-        """3.x model + only thinking_budget set returns None (budget ignored)."""
-        result = _build_thinking_config("gemini-3.5-flash", None, 512)
-        assert result is None
-
-    def test_25_model_only_level_set_returns_none(self):
-        """Non-3.x model + only thinking_level set returns None (level ignored)."""
-        result = _build_thinking_config("gemini-2.5-flash", "low", None)
-        assert result is None
+        """Neither key set returns None."""
+        assert _reasoning_effort({}) is None
 
     def test_empty_string_level_treated_as_not_set(self):
         """Empty string thinking_level is treated as not set."""
-        assert _build_thinking_config("gemini-3.5-flash", "", None) is None
+        assert _reasoning_effort({"thinking_level": ""}) is None
 
-    def test_all_valid_levels_accepted(self):
-        """All four valid thinking levels are accepted for 3.x models."""
-        for level in ("minimal", "low", "medium", "high"):
-            result = _build_thinking_config("gemini-3.5-flash", level, None)
-            assert result is not None, f"Expected ThinkingConfig for level={level!r}"
-            # SDK normalises to a ThinkingLevel enum; compare via .value.
-            assert result.thinking_level.value == level.upper()
+    def test_invalid_budget_falls_through_to_none(self):
+        """A non-integer thinking_budget logs a warning and returns None."""
+        assert _reasoning_effort({"thinking_budget": "not-a-number"}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -667,67 +648,49 @@ class TestHasSpeakerTurns:
 # ---------------------------------------------------------------------------
 
 
-def _make_fake_response(text: str) -> MagicMock:
-    """Build a single fake genai response object."""
-    r = MagicMock()
-    r.text = text
-    r.usage_metadata = MagicMock()
-    return r
-
-
 class TestDialogueGuardrail:
     """Retry guardrail: no speaker turns triggers retry; raises after all attempts."""
 
     def test_all_bad_responses_raises_runtime_error(self):
         """When every attempt returns text with no speaker turns, RuntimeError is raised."""
-        bad_response = _make_fake_response(
-            "I am thinking about the structure of the dialogue..."
-        )
-        mock_genai = MagicMock()
-        mock_client = MagicMock()
-        mock_genai.Client.return_value = mock_client
-        mock_client.models.generate_content.return_value = bad_response
+        bad_result = _llm_result("I am thinking about the structure of the dialogue...")
 
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+        with patch("tts_podcast.llm_summarizer.complete", return_value=bad_result):
             with pytest.raises(RuntimeError, match="no speaker turns"):
-                generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+                generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
     def test_retry_on_bad_then_good_returns_chunks(self):
         """When the first attempt is bad but the second is valid, chunks are returned."""
-        bad_response = _make_fake_response("Planning: let me think about this...")
-        good_response = _make_fake_response(SHORT_DIALOGUE)
+        bad_result = _llm_result("Planning: let me think about this...")
+        good_result = _llm_result(SHORT_DIALOGUE)
 
-        mock_genai = MagicMock()
-        mock_client = MagicMock()
-        mock_genai.Client.return_value = mock_client
-        mock_client.models.generate_content.side_effect = [bad_response, good_response]
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+        with patch(
+            "tts_podcast.llm_summarizer.complete",
+            side_effect=[bad_result, good_result],
+        ) as mock_complete:
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
         assert len(chunks) > 0
         assert all(isinstance(c, DialogueChunk) for c in chunks)
         # Two API calls were made (one bad, one good)
-        assert mock_client.models.generate_content.call_count == 2
+        assert mock_complete.call_count == 2
 
     def test_empty_response_also_triggers_retry(self):
-        """An empty response.text is treated as a failed attempt."""
-        empty_response = _make_fake_response("")
-        good_response = _make_fake_response(SHORT_DIALOGUE)
+        """An empty response text is treated as a failed attempt."""
+        empty_result = _llm_result("")
+        good_result = _llm_result(SHORT_DIALOGUE)
 
-        mock_genai = MagicMock()
-        mock_client = MagicMock()
-        mock_genai.Client.return_value = mock_client
-        mock_client.models.generate_content.side_effect = [empty_response, good_response]
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+        with patch(
+            "tts_podcast.llm_summarizer.complete",
+            side_effect=[empty_result, good_result],
+        ):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
         assert len(chunks) > 0
 
 
 # ---------------------------------------------------------------------------
-# Tests for thinking_config wiring in generate_dialogue
+# Tests for reasoning_effort wiring in generate_dialogue
 # ---------------------------------------------------------------------------
 
 
@@ -741,33 +704,25 @@ GEMINI_CFG_3X = {
 }
 
 
-class TestThinkingConfigWiring:
-    """thinking_config is passed to generate_content when configured."""
+class TestReasoningEffortWiring:
+    """reasoning_effort is passed to complete() when configured."""
 
-    def test_thinking_config_passed_for_3x_model_with_level(self):
-        """GenerateContentConfig carries thinking_config when thinking_level is set."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+    def test_reasoning_effort_passed_when_thinking_level_set(self):
+        """complete() receives reasoning_effort='low' when dialogue.thinking_level='low'."""
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG_3X, LLM_SETTINGS, "Alex", "Jordan")
 
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG_3X, "Alex", "Jordan")
+        call_kwargs = mock_complete.call_args.kwargs
+        assert call_kwargs.get("reasoning_effort") == "low"
 
-        call_kwargs = mock_genai.Client.return_value.models.generate_content.call_args.kwargs
-        config_obj = call_kwargs.get("config")
-        assert config_obj is not None
-        assert config_obj.thinking_config is not None
-        # SDK normalises to a ThinkingLevel enum; compare via .value.
-        assert config_obj.thinking_config.thinking_level.value == "LOW"
+    def test_no_reasoning_effort_when_not_set(self):
+        """complete() receives reasoning_effort=None when dialogue section is absent."""
+        with patch(
+            "tts_podcast.llm_summarizer.complete", return_value=_llm_result(SHORT_DIALOGUE)
+        ) as mock_complete:
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, LLM_SETTINGS, "Alex", "Jordan")
 
-    def test_no_thinking_config_when_not_set(self):
-        """GenerateContentConfig has no thinking_config when dialogue section is absent."""
-        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
-
-        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
-            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
-
-        call_kwargs = mock_genai.Client.return_value.models.generate_content.call_args.kwargs
-        config_obj = call_kwargs.get("config")
-        assert config_obj is not None
-        # thinking_config should be absent or None
-        thinking = getattr(config_obj, "thinking_config", None)
-        assert thinking is None
+        call_kwargs = mock_complete.call_args.kwargs
+        assert call_kwargs.get("reasoning_effort") is None

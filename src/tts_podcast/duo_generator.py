@@ -28,14 +28,12 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from google import genai
-from google.genai import types
-
 from tts_podcast.duos import GEMINI_VOICES, _validate_speaker
-from tts_podcast.retry import gemini_retry
+from tts_podcast.llm_client import build_model_string, complete
 
 if TYPE_CHECKING:
     from tts_podcast.models import Source
+    from tts_podcast.settings import LlmSettings
     from tts_podcast.token_tracker import TokenTracker
 
 logger = logging.getLogger(__name__)
@@ -48,70 +46,68 @@ _MAX_FULL_TEXT_CHARS = 1500
 # Beyond this count, only titles and summaries are shown to the model.
 _MAX_SOURCES_FULL = 4
 
-# The JSON schema describing the expected structured output.
-# Both voice fields are constrained to an ENUM of valid Gemini voice names
-# (list(GEMINI_VOICES)) so the API cannot return a hallucinated voice name
-# that would silently break the TTS stage later in the pipeline.
-_DUO_RESPONSE_SCHEMA = types.Schema(
-    type=types.Type.OBJECT,
-    description="A generated podcast voice duo with two speakers.",
-    properties={
-        "description": types.Schema(
-            type=types.Type.STRING,
-            description="One-sentence description of the duo's dynamic and tone.",
-        ),
-        "speaker1": types.Schema(
-            type=types.Type.OBJECT,
-            description="First speaker configuration.",
-            properties={
-                "name": types.Schema(
-                    type=types.Type.STRING,
-                    description="Host first name (short, memorable).",
-                ),
-                "voice": types.Schema(
-                    type=types.Type.STRING,
-                    description="Prebuilt Gemini TTS voice name.",
-                    # Constrain to valid voices — prevents hallucinated names
-                    # that would cause a TTS API error at generation time.
-                    enum=list(GEMINI_VOICES),
-                ),
-                "personality": types.Schema(
-                    type=types.Type.STRING,
-                    description=(
-                        "Short personality string in English (2-3 traits), "
-                        "matching the voice descriptor."
-                    ),
+def _speaker_schema() -> dict[str, Any]:
+    """
+    Build the JSON-schema fragment for a single speaker block.
+
+    The ``voice`` field is constrained to an ENUM of valid Gemini voice names
+    (``list(GEMINI_VOICES)``) so a schema-enforcing provider cannot return a
+    hallucinated voice name that would break the Gemini TTS stage later.
+
+    Returns
+    -------
+    dict[str, Any]
+        A JSON-schema ``object`` describing one speaker.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Host first name (short, memorable).",
+            },
+            "voice": {
+                "type": "string",
+                "description": "Prebuilt Gemini TTS voice name.",
+                # Prevents hallucinated names that would cause a TTS API error.
+                "enum": list(GEMINI_VOICES),
+            },
+            "personality": {
+                "type": "string",
+                "description": (
+                    "Short personality string in English (2-3 traits), "
+                    "matching the voice descriptor."
                 ),
             },
-            required=["name", "voice", "personality"],
-        ),
-        "speaker2": types.Schema(
-            type=types.Type.OBJECT,
-            description="Second speaker configuration.",
-            properties={
-                "name": types.Schema(
-                    type=types.Type.STRING,
-                    description="Host first name (short, memorable).",
-                ),
-                "voice": types.Schema(
-                    type=types.Type.STRING,
-                    description="Prebuilt Gemini TTS voice name.",
-                    # Same enum constraint as speaker1.
-                    enum=list(GEMINI_VOICES),
-                ),
-                "personality": types.Schema(
-                    type=types.Type.STRING,
-                    description=(
-                        "Short personality string in English (2-3 traits), "
-                        "matching the voice descriptor."
-                    ),
-                ),
+        },
+        "required": ["name", "voice", "personality"],
+    }
+
+
+# LiteLLM ``response_format`` for the duo call.  Uses the provider-agnostic
+# JSON-schema form; on schema-enforcing providers (Gemini, OpenAI, Anthropic)
+# the voice ``enum`` is hard-enforced, elsewhere LiteLLM downgrades to JSON mode
+# and the Python-side validation in :func:`generate_duo` is the backstop.
+_DUO_RESPONSE_FORMAT: dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "voice_duo",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "description": "A generated podcast voice duo with two speakers.",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "One-sentence description of the duo's dynamic and tone.",
+                },
+                "speaker1": _speaker_schema(),
+                "speaker2": _speaker_schema(),
             },
-            required=["name", "voice", "personality"],
-        ),
+            "required": ["description", "speaker1", "speaker2"],
+        },
     },
-    required=["description", "speaker1", "speaker2"],
-)
+}
 
 
 def _build_voice_catalogue() -> str:
@@ -250,6 +246,7 @@ def generate_duo(
     sources: list[Source],
     research_notes: str,
     gemini_cfg: dict[str, Any],
+    llm_cfg: LlmSettings,
     token_tracker: TokenTracker | None = None,
     *,
     language: str = "French",
@@ -282,9 +279,12 @@ def generate_duo(
         Accumulated research notes from :mod:`tts_podcast.research` (may be
         empty string when research was not run).
     gemini_cfg : dict[str, Any]
-        Loaded Gemini configuration dict (from
-        :func:`tts_podcast.config.load_config`).
-        Required keys: ``api_key``, ``text_model``.  Optional: ``service_tier``.
+        Loaded configuration dict.  Unused for auth/model selection now (that
+        comes from *llm_cfg*); kept for signature symmetry with the other call
+        sites and any future duo-shaping fields.
+    llm_cfg : LlmSettings
+        Resolved provider-agnostic LLM settings selecting which model performs
+        the structured-output casting call.
     token_tracker : TokenTracker or None, optional
         When provided, records the token usage of the Gemini call for cost
         accounting.  Passing ``None`` silently skips tracking.
@@ -326,69 +326,50 @@ def generate_duo(
     prompt = _build_prompt(sources, research_notes, language)
     system_instruction = _build_system_instruction()
 
+    model_string = build_model_string(llm_cfg.provider, llm_cfg.text_model)
     logger.info(
         "Generating voice duo with model '%s' for %d source(s) (language=%s).",
-        gemini_cfg["text_model"],
+        model_string,
         len(sources),
         language,
     )
     logger.debug("Duo-generation prompt (%d chars):\n%s", len(prompt), prompt)
 
-    client = genai.Client(api_key=gemini_cfg["api_key"])
-    service_tier = gemini_cfg.get("service_tier")
-
-    # Mirror the config_kwargs pattern from llm_summarizer.generate_dialogue
-    # (lines 789-814) for consistency across all Gemini text calls.
-    config_kwargs: dict[str, Any] = {
-        # Structured output: constrain response to our JSON schema.
-        # The voice fields in _DUO_RESPONSE_SCHEMA use enum=list(GEMINI_VOICES)
-        # so the model CANNOT return a hallucinated voice name.
-        "response_mime_type": "application/json",
-        "response_schema": _DUO_RESPONSE_SCHEMA,
-        "system_instruction": system_instruction,
+    # Structured output: constrain the response to our JSON schema.  The voice
+    # fields in _DUO_RESPONSE_FORMAT use enum=list(GEMINI_VOICES) so a
+    # schema-enforcing provider CANNOT return a hallucinated voice name.
+    result = complete(
+        model=model_string,
+        prompt=prompt,
+        api_key=llm_cfg.api_key,
+        api_base=llm_cfg.api_base,
+        temperature=llm_cfg.temperature,
+        system_instruction=system_instruction,
+        response_format=_DUO_RESPONSE_FORMAT,
         # Duo generation is short; 512 tokens is more than enough.
-        "max_output_tokens": 512,
-    }
-    if service_tier:
-        # Service tier is passed as a custom HTTP header (Gemini text API
-        # only; TTS never uses it — see CLAUDE.md key invariants).
-        config_kwargs["http_options"] = types.HttpOptions(
-            headers={"x-goog-api-service-tier": service_tier},
-        )
-
-    @gemini_retry
-    def _call_api() -> Any:
-        return client.models.generate_content(
-            model=gemini_cfg["text_model"],
-            contents=prompt,
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
-
-    response = _call_api()
+        max_tokens=512,
+        extra_headers=llm_cfg.extra_headers,
+    )
 
     # Record token usage for cost accounting when a tracker is wired in.
     if token_tracker is not None:
-        token_tracker.record_usage(gemini_cfg["text_model"], response.usage_metadata)
+        token_tracker.record(
+            llm_cfg.text_model, result.input_tokens, result.output_tokens
+        )
 
-    # Parse the structured output.
-    # Prefer response.parsed when the SDK populates it (newer SDK versions
-    # with response_schema support); fall back to json.loads(response.text).
-    raw: Any = None
-    if hasattr(response, "parsed") and response.parsed is not None:
-        raw = response.parsed
-    else:
-        text = response.text or ""
-        if not text.strip():
-            raise RuntimeError(
-                "Gemini returned an empty response for duo generation. "
-                "Check that the text model supports structured output."
-            )
-        try:
-            raw = json.loads(text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"Gemini returned non-JSON for duo generation: {text[:200]!r}"
-            ) from exc
+    # Parse the structured JSON output.
+    text = result.text or ""
+    if not text.strip():
+        raise RuntimeError(
+            "The model returned an empty response for duo generation. "
+            "Check that the selected model supports structured JSON output."
+        )
+    try:
+        raw: Any = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"The model returned non-JSON for duo generation: {text[:200]!r}"
+        ) from exc
 
     # Normalise: the SDK may return a dict-like Pydantic object; coerce to dict.
     if not isinstance(raw, dict):

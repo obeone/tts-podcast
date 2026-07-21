@@ -5,13 +5,17 @@
 ![Gemini TTS](https://img.shields.io/badge/Gemini-multi--speaker%20TTS-8E75B2?logo=googlegemini&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-> Turn any article, document, or search query into a **two-voice podcast** —
-> scraped, researched, scripted, and voiced by Google Gemini.
+> Turn any article, document, or search query into a **two-voice podcast**,
+> scraped, researched, scripted, and voiced.
 
 Feed it URLs, local files, or a topic to search. It scrapes the sources,
 optionally runs iterative Google-Search-grounded research, writes a natural
 back-and-forth dialogue between two hosts, and synthesises an MP3 (or WAV)
-with Gemini's multi-speaker TTS — plus an optional folder of Markdown reports.
+with multi-speaker TTS, plus an optional folder of Markdown reports. The
+dialogue-writing model is configurable (Gemini by default, or any provider
+LiteLLM supports: OpenAI, Anthropic, a local Ollama, and more), and so is the
+voice synthesis backend: Gemini's multi-speaker TTS out of the box, or your
+own self-hosted MOSS-TTSD server.
 
 ---
 
@@ -23,7 +27,8 @@ with Gemini's multi-speaker TTS — plus an optional folder of Markdown reports.
 | 📄 | **Local documents** | Include `.txt`, `.md`, `.html`, or `.pdf` files with `-f` — no network request. |
 | 🔍 | **Web-search queries** | Pass a natural-language topic with `-s`; the research stage investigates it via Google Search grounding. |
 | 🧠 | **Iterative research** | `--research N` runs *N* sequential grounded rounds, each drilling into the gaps the last one left. |
-| 🎭 | **Multi-voice TTS** | Two distinct Gemini voices with configurable personalities, scene, and delivery cues. |
+| 🔀 | **Multi-provider LLM** | Dialogue, research, and voice-duo casting run through LiteLLM: Gemini by default, or switch to OpenAI, Anthropic, a local Ollama, or anything else LiteLLM supports. |
+| 🎭 | **Multi-voice TTS** | Two distinct voices with configurable personalities, scene, and delivery cues. Gemini's multi-speaker TTS by default, or a self-hosted MOSS-TTSD server. |
 | 👥 | **Named voice duos** | Five built-in pairings (`contrast` default, `warm`, `explorer`, `journalist`, `debate`) — or define your own from all 30 prebuilt Gemini voices. |
 | 🎨 | **Style & angle control** | Presets, free-text style, per-episode angle, and per-speaker overlays — without touching the baseline voice acting. |
 | 📑 | **Report folder** | Opt-in with `--report`: writes `overview.md`, `sources.md`, `script.md`, `research.md`, and `summary.md` next to the audio. |
@@ -221,6 +226,48 @@ gemini:
     target_duration_minutes: 8
 ```
 
+### Choosing an LLM provider
+
+The `llm:` section picks which provider writes the dialogue, runs research,
+and casts an auto-generated duo. It's optional: leave it out and the tool
+keeps reading `gemini:` as before, defaulting to Gemini.
+
+```yaml
+llm:
+  provider: openai              # gemini | openai | anthropic | ollama | ...
+  text_model: gpt-4.1            # bare model name
+  research_model: gpt-4.1-mini   # optional, defaults to text_model
+  api_key_env: OPENAI_API_KEY
+```
+
+Google Search grounding for the research stage is a Gemini-only capability:
+with any other provider, research still runs, just without live web
+grounding. Gemini TTS keeps reading its own `gemini.api_key_env` regardless
+of which provider writes the dialogue, so you can mix, say, an OpenAI script
+with Gemini voices.
+
+### Choosing a TTS backend
+
+The `tts:` section picks the speech backend. It defaults to `gemini` when
+omitted, so existing configs render exactly as before.
+
+```yaml
+tts:
+  backend: moss                      # gemini | moss
+  moss:
+    api_base: http://localhost:8091
+```
+
+`moss` talks to a self-hosted [MOSS-TTSD](https://github.com/OpenMOSS/MOSS-TTSD)
+server (an 8B spoken-dialogue model), served by the project's own SGLang fork.
+That server exposes SGLang's native API, not an OpenAI-compatible one, so the
+client POSTs to `{api_base}/generate` (no `/v1` suffix on `api_base`) and gets
+back a base64-encoded WAV file, which it decodes locally, reading the real
+sample rate off the WAV header. The model itself runs on your own GPU box;
+tts-podcast is only the HTTP client. See [`config.example.yaml`](config.example.yaml)
+for the full set of `tts.moss` options, including per-speaker voice cloning
+from a reference clip.
+
 ---
 
 ## 📦 Installation
@@ -318,10 +365,10 @@ flowchart TB
     SY --> R
 
     R -->|optional| RR[Google Search<br/>grounded rounds]
-    R --> D[💬 llm_summarizer<br/>two-host dialogue]
+    R --> D[💬 llm_summarizer<br/>two-host dialogue, any LLM provider]
     RR --> D
 
-    D --> T[🎙️ Gemini multi-speaker TTS<br/>parallel chunks]
+    D --> T[🎙️ TTS backend<br/>Gemini or MOSS-TTSD, parallel chunks]
     T --> A[🎧 audio_exporter<br/>MP3 / WAV]
     D --> REP[📑 report_generator<br/>Markdown folder]
 ```

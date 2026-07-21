@@ -176,7 +176,7 @@ def _run_capture_speakers(runner: CliRunner, config_path: Path, extra_args: list
     """Invoke `run` with mocked collaborators, capturing the resolved speakers."""
     captured: dict = {}
 
-    def _capture(_articles, gemini_cfg, sp1_name, sp2_name, *args, **kwargs):
+    def _capture(_articles, gemini_cfg, _llm_cfg, sp1_name, sp2_name, *args, **kwargs):
         captured["s1_name"] = sp1_name
         captured["s2_name"] = sp2_name
         captured["s1_voice"] = gemini_cfg["speaker1"]["voice"]
@@ -187,7 +187,7 @@ def _run_capture_speakers(runner: CliRunner, config_path: Path, extra_args: list
     with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
          patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()), \
          patch("tts_podcast.cli.generate_dialogue", side_effect=_capture), \
-         patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+         patch("tts_podcast.tts.gemini_backend.generate_audio_chunks", return_value=[]):
         result = runner.invoke(
             cli,
             ["run", "-c", str(config_path), "-A", "-n", *extra_args,

@@ -19,20 +19,19 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from google import genai
-from google.genai import types
+from tts_podcast.llm_client import build_model_string, complete
 
-from tts_podcast.retry import gemini_retry
 from tts_podcast.style_presets import truncate_with_warning
 
 if TYPE_CHECKING:
     from rich.progress import Progress
     from tts_podcast.models import Source
+    from tts_podcast.settings import LlmSettings
     from tts_podcast.token_tracker import TokenTracker
 
 logger = logging.getLogger(__name__)
 
-# Default model when gemini_cfg lacks a dedicated research.model key.
+# Default model when the LLM settings carry no explicit research/text model.
 _DEFAULT_RESEARCH_MODEL_FALLBACK = "gemini-2.5-flash"
 
 
@@ -176,64 +175,6 @@ def _format_articles(sources: list[Source]) -> str:
     return "\n\n".join(blocks)
 
 
-def _build_search_tool() -> types.Tool:
-    """
-    Construct the Google Search grounding tool for the Gemini API.
-
-    Wrapping construction in a helper keeps the SDK-specific surface in one
-    place so a future API tweak only touches this function.
-
-    Returns
-    -------
-    types.Tool
-        A Tool instance configured with Google Search grounding enabled.
-    """
-    return types.Tool(google_search=types.GoogleSearch())
-
-
-def _extract_citations(response: Any) -> tuple[list[Citation], list[str]]:
-    """
-    Extract grounding citations and search queries from a Gemini response.
-
-    Parameters
-    ----------
-    response : Any
-        The ``GenerateContentResponse`` returned by the Gemini SDK.
-
-    Returns
-    -------
-    tuple[list[Citation], list[str]]
-        ``(citations, raw_search_queries)``.  Either list may be empty when
-        the response carries no grounding metadata (e.g. when the model
-        chose not to issue a search).
-    """
-    citations: list[Citation] = []
-    queries: list[str] = []
-
-    candidates = getattr(response, "candidates", None) or []
-    if not candidates:
-        return citations, queries
-
-    metadata = getattr(candidates[0], "grounding_metadata", None)
-    if metadata is None:
-        return citations, queries
-
-    chunks = getattr(metadata, "grounding_chunks", None) or []
-    for chunk in chunks:
-        web = getattr(chunk, "web", None)
-        if web is None:
-            continue
-        uri = getattr(web, "uri", "") or ""
-        title = getattr(web, "title", "") or uri
-        if uri:
-            citations.append(Citation(title=title, uri=uri))
-
-    queries_attr = getattr(metadata, "web_search_queries", None) or []
-    queries = [str(q) for q in queries_attr]
-
-    return citations, queries
-
-
 def _build_combined_notes(rounds: list[ResearchRound]) -> str:
     """
     Concatenate per-round notes into a single string with headers.
@@ -261,32 +202,43 @@ def _build_combined_notes(rounds: list[ResearchRound]) -> str:
 def _run_single_round(
     *,
     prompt: str,
-    model: str,
+    model_string: str,
+    bare_model: str,
     query_hint: str,
     round_index: int,
-    api_key: str,
-    service_tier: str | None,
+    api_key: str | None,
+    api_base: str | None,
+    extra_headers: dict[str, str] | None,
     token_tracker: TokenTracker | None,
 ) -> ResearchRound:
     """
-    Execute one Gemini call with Google Search grounding and capture the result.
+    Execute one grounded LLM call and capture the result.
+
+    The call is routed through :func:`tts_podcast.llm_client.complete` with
+    Google Search grounding enabled.  Grounding is Gemini-native: on non-Gemini
+    providers the tool is silently omitted and the round runs on the model's own
+    knowledge (no citations/queries).
 
     Parameters
     ----------
     prompt : str
         Fully formatted prompt for this round.
-    model : str
-        Gemini model name to use for the research call.
+    model_string : str
+        LiteLLM model string (``"<provider>/<model>"``) for the call.
+    bare_model : str
+        Bare model name used as the token-tracking / pricing key.
     query_hint : str
         Short hint stored in the returned :class:`ResearchRound` for logging.
     round_index : int
         Zero-based index of this round.
-    api_key : str
-        Gemini API key.
-    service_tier : str or None
-        Optional service tier header value.
+    api_key : str or None
+        Provider API key (``None`` lets LiteLLM read the provider env var).
+    api_base : str or None
+        Optional provider base-URL override.
+    extra_headers : dict[str, str] or None
+        Passthrough HTTP headers (e.g. the Gemini service-tier header).
     token_tracker : TokenTracker or None
-        When provided, records prompt and candidates token usage.
+        When provided, records prompt and completion token usage.
 
     Returns
     -------
@@ -301,37 +253,34 @@ def _run_single_round(
         prompt,
     )
 
-    client = genai.Client(api_key=api_key)
-
-    config_kwargs: dict[str, Any] = {
-        "tools": [_build_search_tool()],
-    }
-    if service_tier:
-        config_kwargs["http_options"] = types.HttpOptions(
-            headers={"x-goog-api-service-tier": service_tier},
-        )
-
-    @gemini_retry
-    def _call_api():
-        return client.models.generate_content(
-            model=model,
-            contents=prompt,
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
-
-    response = _call_api()
+    result = complete(
+        model=model_string,
+        prompt=prompt,
+        api_key=api_key,
+        api_base=api_base,
+        extra_headers=extra_headers,
+        enable_google_search=True,
+    )
 
     if token_tracker is not None:
-        token_tracker.record_usage(model, response.usage_metadata)
+        token_tracker.record(bare_model, result.input_tokens, result.output_tokens)
 
-    notes = (response.text or "").strip()
-    citations, queries = _extract_citations(response)
+    notes = (result.text or "").strip()
+    if result.grounding is not None:
+        citations = [
+            Citation(title=title, uri=uri)
+            for title, uri in result.grounding.citations
+        ]
+        queries = list(result.grounding.queries)
+    else:
+        citations = []
+        queries = []
 
     if not notes:
         logger.warning(
             "Research round %d returned no notes (model=%s).",
             round_index + 1,
-            model,
+            model_string,
         )
     else:
         logger.info(
@@ -360,6 +309,7 @@ def conduct_research(
     sources: list[Source],
     rounds: int,
     gemini_cfg: dict,
+    llm_cfg: LlmSettings,
     token_tracker: TokenTracker | None = None,
     progress: Progress | None = None,
     task_id: Any = None,
@@ -367,10 +317,11 @@ def conduct_research(
     angle: str | None = None,
 ) -> ResearchReport:
     """
-    Run *rounds* sequential research rounds using Gemini + Google Search.
+    Run *rounds* sequential research rounds using the LLM + Google Search.
 
     Round 1 looks for complementary angles; each subsequent round receives
-    the previous rounds' notes and is asked to drill into the gaps.
+    the previous rounds' notes and is asked to drill into the gaps.  Search
+    grounding is Gemini-native — see :func:`_run_single_round`.
 
     Parameters
     ----------
@@ -381,9 +332,12 @@ def conduct_research(
         returns an empty :class:`ResearchReport` without any API call.
         Must be non-negative.
     gemini_cfg : dict
-        Resolved Gemini configuration.  Uses ``api_key``, ``language``
-        (default ``"French"``), and ``research.model`` if present
-        (falls back to ``text_model``, then to ``"gemini-2.5-flash"``).
+        Resolved configuration section, used here only for ``language``
+        (default ``"French"``).  Model selection and auth come from *llm_cfg*.
+    llm_cfg : LlmSettings
+        Resolved provider-agnostic LLM settings.  The research model is
+        ``research_model`` when set, else ``text_model``, else
+        ``"gemini-2.5-flash"``.
     token_tracker : TokenTracker or None, optional
         When provided, records token usage for every research call.
     progress : rich.progress.Progress or None, optional
@@ -419,14 +373,15 @@ def conduct_research(
         return ResearchReport(rounds=[], combined_notes="")
 
     language = gemini_cfg.get("language", "French")
-    research_cfg = gemini_cfg.get("research", {}) or {}
-    model = (
-        research_cfg.get("model")
-        or gemini_cfg.get("text_model")
+    bare_model = (
+        llm_cfg.research_model
+        or llm_cfg.text_model
         or _DEFAULT_RESEARCH_MODEL_FALLBACK
     )
-    api_key = gemini_cfg["api_key"]
-    service_tier = gemini_cfg.get("service_tier") or None
+    model_string = build_model_string(llm_cfg.provider, bare_model)
+    api_key = llm_cfg.api_key
+    api_base = llm_cfg.api_base
+    extra_headers = llm_cfg.extra_headers
 
     articles_text = _format_articles(sources)
     completed_rounds: list[ResearchRound] = []
@@ -443,7 +398,7 @@ def conduct_research(
     logger.info(
         "Conducting %d research round(s) with model '%s' on %d source(s).",
         rounds,
-        model,
+        model_string,
         len(sources),
     )
 
@@ -478,11 +433,13 @@ def conduct_research(
 
         round_result = _run_single_round(
             prompt=prompt,
-            model=model,
+            model_string=model_string,
+            bare_model=bare_model,
             query_hint=query_hint,
             round_index=i,
             api_key=api_key,
-            service_tier=service_tier,
+            api_base=api_base,
+            extra_headers=extra_headers,
             token_tracker=token_tracker,
         )
         completed_rounds.append(round_result)

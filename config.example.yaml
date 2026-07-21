@@ -10,6 +10,69 @@ web:
   # HTTP timeout in seconds for article page fetches
   timeout_seconds: 15
 
+# ── LLM: text generation (provider-agnostic, via LiteLLM) ─────────────
+# Selects which model writes the dialogue, runs research, and casts the voice
+# duo. OPTIONAL: when this whole section is omitted, the settings fall back to
+# the legacy `gemini:` block below (provider = gemini), so existing configs
+# keep working unchanged.
+# llm:
+#   # Provider routes through LiteLLM: gemini | openai | anthropic | ollama | …
+#   provider: gemini
+#   # Model for dialogue + duo casting (bare name; the provider prefix is added).
+#   text_model: gemini-2.5-flash
+#   # Optional dedicated research model; defaults to text_model.
+#   research_model: gemini-2.5-flash
+#   # Env var holding the provider API key (resolved at load time).
+#   api_key_env: GEMINI_API_KEY
+#   # Optional base-URL override — local Ollama or a self-hosted OpenAI endpoint.
+#   # api_base: http://localhost:11434
+#   # Optional sampling temperature for the text calls.
+#   # temperature: 0.8
+#   # Arbitrary passthrough HTTP headers (provider org ids, Anthropic beta
+#   # flags, the Gemini service-tier header, …). Replaces the old
+#   # gemini.service_tier (still honoured for back-compat and folded in here).
+#   # extra_headers:
+#   #   x-goog-api-service-tier: flex
+
+# ── TTS: speech synthesis (pluggable backend) ─────────────────────────
+# Selects which engine renders audio. OPTIONAL: defaults to the Gemini backend
+# driven by the gemini.* block below, so existing configs are unchanged.
+# tts:
+#   backend: gemini            # gemini | moss
+#   # Settings for the self-hosted MOSS-TTSD backend (only read when
+#   # backend: moss). MOSS-TTSD is an 8B dialogue model you run yourself behind
+#   # the *native* SGLang API of the project's own `OpenMOSS/sglang` fork — not
+#   # an OpenAI-compatible endpoint. The client POSTs to `{api_base}/generate`;
+#   # this tool is only the HTTP client.
+#   moss:
+#     api_base: http://localhost:8091      # server root, no /v1 suffix
+#     # api_key_env: MOSS_API_KEY          # omit for an open local server
+#     # max_workers: 2                     # concurrent requests to the server
+#     # timeout_seconds: 300               # per-request timeout (MOSS is slow)
+#     # The sample rate is read from the WAV header the server returns for
+#     # each chunk, so it is not configured here.
+#     # Voice cloning: a reference clip + its transcript per speaker. speaker1
+#     # maps to [S1], speaker2 to [S2]. Omit to let MOSS pick voices (not stable
+#     # across runs).
+#     speaker1:
+#       ref_audio: /path/to/host1_reference.wav   # path, https URL, or data: URI
+#       ref_text: "Transcript of the host 1 reference clip."
+#     speaker2:
+#       ref_audio: /path/to/host2_reference.wav
+#       ref_text: "Transcript of the host 2 reference clip."
+#     # ref_prefix_mode: tagged             # tagged (default, prepends each
+#     #                                     # reference transcript behind its
+#     #                                     # [Sn] tag) | none (no prefix)
+#     # strip_delivery_cues: true           # drop (cue)/[tag] markers MOSS can't use
+#     # Sampling knobs forwarded inside the request's nested `sampling_params`:
+#     # temperature: 0.7
+#     # top_p: 0.9
+#     # top_k: 40
+#     # repetition_penalty: 1.1
+#     # max_new_tokens: 2048
+#     # extra_body:                         # server-specific passthrough fields
+#     #   some_custom_field: value
+
 gemini:
   # Name of the environment variable holding your Gemini API key
   api_key_env: GEMINI_API_KEY
