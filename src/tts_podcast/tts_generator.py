@@ -29,6 +29,7 @@ from tts_podcast.retry import gemini_retry
 
 if TYPE_CHECKING:
     from rich.progress import Progress
+
     from tts_podcast.llm_summarizer import DialogueChunk
     from tts_podcast.token_tracker import TokenTracker
 
