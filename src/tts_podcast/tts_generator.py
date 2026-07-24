@@ -37,13 +37,24 @@ logger = logging.getLogger(__name__)
 # Maximum number of concurrent TTS API requests.
 _TTS_MAX_WORKERS = 5
 
+# Default sampling temperature for the TTS model.
+# Each chunk is a long, standalone generation (~3000 bytes of text) started
+# from the same calm preamble.  At temperature 1.0 the multi-speaker model
+# tends to drift toward over-expression as it reads on — an enthusiastic host
+# ramps up within a chunk and "runs out of breath", giving an audible
+# per-chunk sawtooth.  A lower default keeps prosody steady while staying
+# natural.  Override via ``gemini.tts_style.temperature`` in config.
+_DEFAULT_TTS_TEMPERATURE = 0.7
+
 
 def _build_tts_prompt(chunk_text: str, gemini_cfg: dict) -> str:
     """
     Prepend a natural-language audio profile preamble to a dialogue chunk.
 
-    The preamble instructs Gemini TTS to apply consistent speaker personalities
-    and honour inline emotional cues written in parentheses within the dialogue.
+    The preamble instructs Gemini TTS to apply consistent speaker personalities,
+    keep each host's energy steady across the whole chunk (no build-up or
+    crescendo, breathe between sentences), and honour inline emotional cues
+    written in parentheses within the dialogue.
 
     Parameters
     ----------
@@ -82,7 +93,12 @@ def _build_tts_prompt(chunk_text: str, gemini_cfg: dict) -> str:
     preamble += (
         f"Director's notes: Conversational pace — {pace}; speak clearly, "
         "allow a natural beat between sentences so the listener can absorb each idea. "
-        "Genuine reactions, honour any emotional cues written in parentheses in the dialogue.\n\n"
+        "Keep each host's energy level steady from the first line to the last: do not "
+        "build up, speed up, or crescendo as the passage goes on. Breathe — leave a "
+        "clear pause at every sentence boundary and never run turns together. React "
+        "genuinely and stay in character; an enthusiastic host stays warmly enthusiastic, "
+        "not increasingly frantic. "
+        "Honour any emotional cues written in parentheses in the dialogue.\n\n"
     )
     return preamble + chunk_text
 
@@ -223,7 +239,9 @@ def generate_audio_chunks(
 
     speaker1_cfg = gemini_cfg["speaker1"]
     speaker2_cfg = gemini_cfg["speaker2"]
-    temperature = gemini_cfg.get("tts_style", {}).get("temperature", 1.0)
+    temperature = gemini_cfg.get("tts_style", {}).get(
+        "temperature", _DEFAULT_TTS_TEMPERATURE
+    )
 
     voice_config = types.MultiSpeakerVoiceConfig(
         speaker_voice_configs=[
