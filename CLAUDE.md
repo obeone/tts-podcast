@@ -27,7 +27,7 @@ The pipeline in `cli.py::run` is strictly linear; each stage produces dataclasse
 
 Three input kinds feed the same pipeline via the `Source.kind` field (`"url"` / `"file"` / `"search"`):
 - `"url"` — fetched by `web_scraper.scrape_urls`; default when no `-f`/`-s` flag is used.
-- `"file"` — read locally by `local_loader.load_local_file` (txt, md, html, pdf); no network call.
+- `"file"` — read locally by `local_loader.load_local_files` (txt, md, html, pdf); no network call.
 - `"search"` — a natural-language query materialised as a synthetic `Source`; research stage investigates it via Google Search grounding. Research is auto-bumped to 1 round when only search inputs are present.
 
 ```
@@ -36,8 +36,6 @@ Inputs (URLs / -f files / -s queries) ── cli.py ──► list[Source]  (kin
          ├─ URL  ─── web_scraper.scrape_urls
          ├─ file ─── local_loader.load_local_files
          └─ search ─ _make_search_source (synthetic, scraped_ok=True)
-                                       │
-URLs ── web_scraper.scrape_urls ──► list[Source]
                                        │
                           (optional) research.conduct_research
                                        │
@@ -72,6 +70,7 @@ URLs ── web_scraper.scrape_urls ──► list[Source]
 - **Token tracking is opt-in per call site**: every Gemini call must thread `token_tracker` through and call `tracker.record_usage(model, response.usage_metadata)`. Missing wire-ups silently undercount cost.
 - **Style & angle injection points**: `--preset` / `--style` / `--angle` / `--speaker[12]-style` write into `gemini.style.*` and `gemini.speaker[12].style_overlay` (never into `personality`). `llm_summarizer._build_prompt` renders them inside the dialogue prompt: per-speaker overlays in a dedicated `Episode-specific adjustments:` block between `Host personalities:` and `Instructions:`; preset + free style as a `Stylistic guidance:` sub-section inside `Instructions:`; angle as an `- Episode angle:` bullet. The angle is also injected into `research._ROUND_1_PROMPT` (and nowhere else — round N≥2 only sees it indirectly via `previous_notes`, so gap-analysis stays neutral).
 - **Voice duo resolution**: `duos.py` holds `BUILTIN_DUOS` (warm/contrast/explorer/journalist/debate), available out of the box. `cli.py::run` resolves the active duo *before* reading any speaker field, with precedence `--duo` > `gemini.default_duo` > legacy `gemini.speakerN` blocks > built-in `contrast`, then writes the result into `gemini_cfg["speaker1"/"speaker2"]`. This is the single injection point — every downstream consumer (TTS preamble, dialogue prompt, `--speakerN-style` overlays) reads `gemini.speakerN` unchanged, and a config defining only legacy `speaker1`/`speaker2` keeps working untouched. A user `gemini.duos` mapping is merged over the built-ins (same slug overrides; new slugs extend). `tts-podcast duos` lists them (reads the *raw* config, so it needs no API key).
+- **`--duo auto` — content-aware duo generation**: when `--duo` is the literal string `"auto"`, duo resolution is *deferred*. After scraping and research, `duo_generator.generate_duo` calls Gemini with structured output (voice names validated against a `GEMINI_VOICES` Literal enum) to generate names, voices, and personalities suited to the content. The result is injected at the same single injection point in `gemini_cfg["speaker1"/"speaker2"]`; speaker names are also recalculated at that point. Hard invariants: (1) `personality` strings from the generated duo reach downstream consumers verbatim — never mutated; (2) the non-auto code path is behaviorally unchanged; (3) `generate_duo` is never called without `--duo auto`.
 - **Hard invariant — TTS preamble untouched**: `tts_generator._build_tts_prompt` reads `gemini_cfg["speakerN"]["personality"]` verbatim. The new `style_overlay` key is for the dialogue prompt only and MUST NEVER be read by the TTS path. `personality` is never mutated, in memory or on disk, by any code path. Regression test: `tests/test_tts_generator.py::test_tts_preamble_unaffected_by_speaker_overlay`.
 - **Snapshot fixture for the dialogue prompt**: `tests/fixtures/dialogue_prompt_no_overlay.txt` is the byte-identical baseline used by `test_no_flags_byte_identical`. When `_SYSTEM_PROMPT_TEMPLATE` is intentionally edited (typo, wording tweak): (1) edit the template, (2) `uv run python -m tests.fixtures.regen_dialogue_prompt`, (3) review the diff, (4) commit the fixture alongside the template change. The `tests/conftest.py` `collect_ignore_glob = ["fixtures/*"]` line guarantees pytest never auto-collects anything under `tests/fixtures/`.
 
@@ -87,7 +86,8 @@ CLI flags override config: `-R/--research`, `-d/--duration`, `-o/--output-dir`. 
 |---|---|
 | `cli.py` | Click entry point, pipeline orchestration, `config init/show` wizard, `duos` command |
 | `config.py` | YAML loader + `_env` resolution |
-| `duos.py` | Named voice duos: `BUILTIN_DUOS` registry + `resolve_duo` / `describe_duos` |
+| `duos.py` | Named voice duos: `BUILTIN_DUOS` registry + `resolve_duo` / `describe_duos`; `GEMINI_VOICES` set (single source of truth for all 30 prebuilt voices) |
+| `duo_generator.py` | Gemini structured-output call that auto-generates a content-aware duo; voice names validated against `GEMINI_VOICES`; called only when `--duo auto` is passed |
 | `models.py` | `Source` dataclass with `kind` field (`"url"` / `"file"` / `"search"`) |
 | `web_scraper.py` | trafilatura-based scraping, parallel (≤10 workers), optional CloakBrowser fallback |
 | `cloak_fetcher.py` | Optional `cloakbrowser` stealth-Chromium fetch (graceful no-op when absent) |
@@ -104,6 +104,7 @@ CLI flags override config: `-R/--research`, `-d/--duration`, `-o/--output-dir`. 
 
 ## Conventions
 
+- **Version bump before every feature merge**: bump `version` in `pyproject.toml` (single source of truth, SemVer) before merging any feature (feature branch or PR). No feature lands without a version increment.
 - Full NumPy-style docstrings on every public class and function (existing code is the reference).
 - `coloredlogs` is configured by the CLI; modules just call `logging.getLogger(__name__)`.
 - Use `from __future__ import annotations` in every module.

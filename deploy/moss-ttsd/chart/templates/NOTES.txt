@@ -1,0 +1,21 @@
+MOSS-TTSD v1.0 server deployed.
+
+⚠️  First boot is slow: the pod downloads MOSS-TTSD v1.0 + MOSS-Audio-Tokenizer
+    from HuggingFace (tens of GB) and fuses them into the /models volume before
+    SGLang starts serving. The startup probe tolerates up to ~90 minutes.
+
+Watch progress:
+  kubectl -n {{ .Release.Namespace }} logs -f deploy/{{ include "bjw-s.common.lib.chart.names.fullname" . }}
+
+Reach the SGLang HTTP API from inside the cluster:
+  http://{{ include "bjw-s.common.lib.chart.names.fullname" . }}.{{ .Release.Namespace }}.svc:30000
+
+Port-forward for a local test:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "bjw-s.common.lib.chart.names.fullname" . }} 30000:30000
+  curl http://localhost:30000/health
+
+{{- if not .Values.persistence.models.enabled }}
+
+❗ persistence.models is disabled — weights would be re-downloaded on every
+   restart. Enable a persistent volume for any real use.
+{{- end }}

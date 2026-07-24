@@ -1,0 +1,191 @@
+# MOSS-TTSD v1.0 SGLang HTTP server — bjw-s common 5.x values.
+#
+# GPU-only workload. A single replica owns the model volume (ReadWriteOnce PVC)
+# and one NVIDIA GPU. Scaling out means one PVC + GPU per replica, so replicas
+# stay at 1 unless you switch to a ReadWriteMany model store.
+
+defaultPodOptions:
+  # The server never calls the Kubernetes API.
+  automountServiceAccountToken: false
+  # If your image registry is private, create a docker-registry secret in the
+  # target namespace and reference it here:
+  #   kubectl create secret docker-registry <name> \
+  #     --docker-server=<registry> --docker-username=<user> \
+  #     --docker-password=<token> -n <namespace>
+  # imagePullSecrets:
+  #   - name: <name>
+  securityContext:
+    # Matches the non-root user baked into the image (UID/GID 10001) and lets
+    # the mounted /models PVC be group-writable for the downloaded weights.
+    runAsUser: 10001
+    runAsGroup: 10001
+    runAsNonRoot: true
+    fsGroup: 10001
+    fsGroupChangePolicy: OnRootMismatch
+
+controllers:
+  main:
+    type: deployment
+    replicas: 1
+    # Recreate: the RWO model PVC can't be attached to two pods at once during
+    # a rollout.
+    strategy: Recreate
+    pod:
+      # Talos exposes GPUs through the NVIDIA device plugin + runtime class.
+      runtimeClassName: nvidia
+      # Uncomment/adjust to pin scheduling onto GPU nodes.
+      # nodeSelector:
+      #   nvidia.com/gpu.present: "true"
+      # tolerations:
+      #   - key: nvidia.com/gpu
+      #     operator: Exists
+      #     effect: NoSchedule
+    # First boot writes tens of GB to the /models PVC as UID 10001. fsGroup
+    # (below) covers CSI drivers that honour it, but several (NFS, some block
+    # drivers) leave the volume root-owned, and the non-root server then can't
+    # write. This root init container chowns the mount so writes always work,
+    # regardless of the storage class. Idempotent; a near no-op where fsGroup
+    # already applied.
+    initContainers:
+      init-perms:
+        image:
+          repository: busybox
+          tag: "1.36"
+          pullPolicy: IfNotPresent
+        command:
+          - sh
+          - -c
+          - chown -R 10001:10001 /models
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+          # Override the pod-level runAsNonRoot so this container may run as
+          # root purely to fix ownership.
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+              - ALL
+            add:
+              - CHOWN
+              - FOWNER
+              - DAC_OVERRIDE
+    containers:
+      main:
+        # Built from deploy/moss-ttsd/Dockerfile. Override at deploy time:
+        #   --set controllers.main.containers.main.image.tag=<tag>
+        image:
+          repository: ghcr.io/obeone/moss-ttsd
+          tag: "1.0.0"
+          pullPolicy: IfNotPresent
+        env:
+          MODEL_DIR: /models/moss-ttsd-fused
+          HF_HOME: /models/hf-cache
+          SERVE_HOST: "0.0.0.0"
+          SERVE_PORT: "30000"
+          # Curb VRAM fragmentation on tight GPUs (see upstream tip).
+          # SGLANG_EXTRA_ARGS: "--mem-fraction-static 0.85"
+        # For gated/private weight repos, enable secrets.hf-token below and
+        # wire it in by uncommenting this envFrom:
+        # envFrom:
+        #   - secretRef:
+        #       identifier: hf-token
+        resources:
+          requests:
+            cpu: "2"
+            memory: 16Gi
+            nvidia.com/gpu: 1
+          limits:
+            # GPU request == limit is mandatory for nvidia.com/gpu.
+            memory: 32Gi
+            nvidia.com/gpu: 1
+        securityContext:
+          allowPrivilegeEscalation: false
+          # torch/sglang write scratch under /tmp and the venv; a read-only
+          # rootfs would need extra emptyDirs. Kept writable for reliability.
+          readOnlyRootFilesystem: false
+          capabilities:
+            drop:
+              - ALL
+        probes:
+          # Readiness/liveness hit SGLang's /health, which only answers once
+          # the model is loaded.
+          liveness:
+            enabled: true
+            custom: true
+            spec:
+              httpGet:
+                path: /health
+                port: 30000
+              initialDelaySeconds: 0
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 5
+          readiness:
+            enabled: true
+            custom: true
+            spec:
+              httpGet:
+                path: /health
+                port: 30000
+              initialDelaySeconds: 0
+              periodSeconds: 15
+              timeoutSeconds: 5
+              failureThreshold: 3
+          # Startup probe covers the first-boot download + fusion of the
+          # multi-GB weights: 180 * 30s = up to 90 minutes before liveness
+          # takes over.
+          startup:
+            enabled: true
+            custom: true
+            spec:
+              httpGet:
+                path: /health
+                port: 30000
+              initialDelaySeconds: 30
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 180
+
+service:
+  main:
+    controller: main
+    ports:
+      http:
+        port: 30000
+
+# -- Persistent model store. Holds the HF download cache and the fused model,
+#    so weights survive restarts and rollouts (downloaded once on first boot).
+persistence:
+  models:
+    enabled: true
+    type: persistentVolumeClaim
+    accessMode: ReadWriteOnce
+    size: 100Gi
+    # storageClass: ""   # set to your cluster's default/fast class
+    globalMounts:
+      - path: /models
+
+# -- Optional HuggingFace token for gated/private weight repos. Disabled by
+#    default (the MOSS repos are public). Enable and set the value, or point at
+#    an existing secret instead.
+secrets:
+  hf-token:
+    enabled: false
+    stringData:
+      HF_TOKEN: ""
+
+# -- Ingress disabled by default; the server is typically consumed in-cluster.
+ingress:
+  main:
+    enabled: false
+    className: ""
+    hosts:
+      - host: moss-ttsd.local
+        paths:
+          - path: /
+            pathType: Prefix
+            service:
+              identifier: main
+              port: http

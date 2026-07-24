@@ -30,6 +30,69 @@ import click
 logger = logging.getLogger(__name__)
 
 
+# The 30 prebuilt Gemini TTS voices, with their official one-word descriptor.
+# See https://ai.google.dev/gemini-api/docs/speech-generation for voice
+# previews and auditioning.  Google does not document gender; listen in
+# AI Studio before committing to a pairing.
+GEMINI_VOICES: dict[str, str] = {
+    "Zephyr": "Bright",
+    "Puck": "Upbeat",
+    "Charon": "Informative",
+    "Kore": "Firm",
+    "Fenrir": "Excitable",
+    "Leda": "Youthful",
+    "Orus": "Firm",
+    "Aoede": "Breezy",
+    "Callirrhoe": "Easy-going",
+    "Autonoe": "Bright",
+    "Enceladus": "Breathy",
+    "Iapetus": "Clear",
+    "Umbriel": "Easy-going",
+    "Algieba": "Smooth",
+    "Despina": "Smooth",
+    "Erinome": "Clear",
+    "Algenib": "Gravelly",
+    "Rasalgethi": "Informative",
+    "Laomedeia": "Upbeat",
+    "Achernar": "Soft",
+    "Alnilam": "Firm",
+    "Schedar": "Even",
+    "Gacrux": "Mature",
+    "Pulcherrima": "Forward",
+    "Achird": "Friendly",
+    "Zubenelgenubi": "Casual",
+    "Vindemiatrix": "Gentle",
+    "Sadachbia": "Lively",
+    "Sadaltager": "Knowledgeable",
+    "Sulafat": "Warm",
+}
+"""
+All 30 prebuilt Gemini TTS voice names mapped to their official one-word
+descriptor.
+
+Each key is the exact voice name accepted by the Gemini API
+(``speech_config.voice_config.prebuilt_voice_config.voice_name``); each
+value is Google's published single-word characterisation of that voice's
+timbre.
+
+Notes
+-----
+- The descriptor is **informational only** — it is not passed to the API.
+  Its purpose here is to let the duo generator reason about voice character
+  without hard-coding the list a second time.
+- Google does not document voice gender.  Audition each voice in AI Studio
+  before committing to a pairing.
+- Source / previews: https://ai.google.dev/gemini-api/docs/speech-generation
+
+Examples
+--------
+>>> list(GEMINI_VOICES)[:3]
+['Zephyr', 'Puck', 'Charon']
+>>> GEMINI_VOICES["Sulafat"]
+'Warm'
+"""
+
+
 #: The duo selected when neither ``--duo`` nor ``gemini.default_duo`` is set
 #: and no legacy ``gemini.speaker1`` / ``speaker2`` block is present.
 DEFAULT_DUO = "contrast"

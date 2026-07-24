@@ -39,6 +39,7 @@ def _render_overview(
     research: ResearchReport | None = None,
     audio_path: Path | str | None = None,
     token_summary: str | None = None,
+    duo: dict | None = None,
 ) -> str:
     """
     Render a generation overview as Markdown.
@@ -59,6 +60,10 @@ def _render_overview(
     token_summary : str or None
         Human-readable token/cost summary from
         :class:`~tts_podcast.token_tracker.TokenTracker`.
+    duo : dict or None
+        Generated voice duo dict (from ``duo_generator.generate_duo``),
+        present only when ``--duo auto`` was used.  When provided, a
+        "Voice Duo" section is appended to the overview.
 
     Returns
     -------
@@ -78,6 +83,23 @@ def _render_overview(
     if audio_path:
         lines.append(f"| Audio file | `{audio_path}` |")
     lines.append("")
+
+    if duo is not None:
+        # Auto-generated voice duo — surface who the hosts are and why.
+        s1 = duo.get("speaker1", {})
+        s2 = duo.get("speaker2", {})
+        lines.append("## Voice Duo (auto-generated)\n")
+        if duo.get("description"):
+            lines.append(f"*{duo['description']}*\n")
+        lines.append("| Speaker | Voice | Personality |")
+        lines.append("|---|---|---|")
+        lines.append(
+            f"| **{s1.get('name', '?')}** | `{s1.get('voice', '?')}` | {s1.get('personality', '')} |"
+        )
+        lines.append(
+            f"| **{s2.get('name', '?')}** | `{s2.get('voice', '?')}` | {s2.get('personality', '')} |"
+        )
+        lines.append("")
 
     if sources:
         lines.append("## Sources\n")
@@ -331,6 +353,7 @@ def generate_report(
     research: ResearchReport | None = None,
     audio_path: Path | str | None = None,
     token_summary: str | None = None,
+    duo: dict | None = None,
 ) -> Path:
     """
     Generate a complete report folder for one podcast generation.
@@ -359,6 +382,10 @@ def generate_report(
         Path to the generated audio file (shown in the overview).
     token_summary : str or None
         Human-readable token/cost summary from the token tracker.
+    duo : dict or None, optional
+        Auto-generated voice duo dict (from ``duo_generator.generate_duo``).
+        When present, the overview includes a "Voice Duo" section with the
+        host names, Gemini voices, and personality descriptions.
 
     Returns
     -------
@@ -387,6 +414,7 @@ def generate_report(
             research=research,
             audio_path=audio_path,
             token_summary=token_summary,
+            duo=duo,
         ),
         encoding="utf-8",
     )

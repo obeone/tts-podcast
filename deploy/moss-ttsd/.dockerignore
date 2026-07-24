@@ -1,0 +1,4 @@
+# The image clones MOSS-TTSD upstream at build time, so the build context only
+# needs the entrypoint. Exclude everything else to keep the context tiny.
+*
+!entrypoint.sh
