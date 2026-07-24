@@ -19,7 +19,6 @@ from tts_podcast.tts_generator import (
     generate_audio_chunks,
 )
 
-
 _BASE_CFG = {
     "tts_model": "gemini-2.5-flash-preview-tts",
     "language": "French",
