@@ -379,3 +379,105 @@ class TestOutputFile:
         assert mock_encode.called, "stdout mode must encode in memory"
         assert not mock_export.called, "stdout mode must not write a file"
         assert b"BINARYAUDIO" in result.stdout_bytes
+
+
+class TestChunkBudgetResolvedBeforeBilling:
+    """
+    The chunk byte budget reads only the resolved config (speakers, language,
+    ``tts_style``), never the generated text, so the CLI resolves it before the
+    research and dialogue stages run.
+
+    That ordering is the whole point of the over-budget warning: resolved at
+    the point of use it would land after the user has already paid for research
+    and for the dialogue, which is exactly the failure it was meant to replace.
+    """
+
+    def test_budget_is_resolved_before_research_runs(self, cli_env):
+        runner, config_path = cli_env
+        order: list[str] = []
+
+        def _resolve(gemini_cfg):
+            order.append("budget")
+            return 2500
+
+        def _research(*_args, **_kwargs):
+            order.append("research")
+            return ResearchReport()
+
+        with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
+             patch("tts_podcast.cli._resolve_chunk_budget", side_effect=_resolve), \
+             patch("tts_podcast.cli.conduct_research", side_effect=_research), \
+             patch("tts_podcast.cli.generate_dialogue", return_value=[]), \
+             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "-c", str(config_path),
+                    "-R", "1",
+                    "-A",
+                    "-n",
+                    "https://example.com/article",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert order == ["budget", "research"], (
+            f"Expected the budget to be resolved before research, got {order!r}."
+        )
+
+    def test_resolved_budget_is_passed_to_generate_dialogue(self, cli_env):
+        runner, config_path = cli_env
+        captured: dict = {}
+
+        def _capture(_articles, _gemini_cfg, *_args, **kwargs):
+            captured["max_bytes"] = kwargs.get("max_bytes")
+            return []
+
+        with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
+             patch("tts_podcast.cli._resolve_chunk_budget", return_value=2345), \
+             patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()), \
+             patch("tts_podcast.cli.generate_dialogue", side_effect=_capture), \
+             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+            result = runner.invoke(
+                cli,
+                ["run", "-c", str(config_path), "-A", "-n", "https://example.com/article"],
+            )
+        assert result.exit_code == 0, result.output
+        assert captured["max_bytes"] == 2345, (
+            "A budget computed and then not threaded through is the same silent "
+            "failure as a Gemini call that forgets its token_tracker."
+        )
+
+    def test_budget_reflects_the_duo_supplied_tts_style(self, cli_env):
+        # The duo fills tts_style.scene / pace just above the resolution point.
+        # Resolving before that fill would measure a preamble the run never
+        # sends and hand out a budget that is too generous.
+        runner, config_path = cli_env
+        captured: dict = {}
+
+        def _capture_cfg(gemini_cfg):
+            captured["scene"] = gemini_cfg.get("tts_style", {}).get("scene")
+            captured["voice_direction"] = gemini_cfg["speaker1"].get("voice_direction")
+            return 2500
+
+        with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
+             patch("tts_podcast.cli._resolve_chunk_budget", side_effect=_capture_cfg), \
+             patch("tts_podcast.cli.conduct_research", return_value=ResearchReport()), \
+             patch("tts_podcast.cli.generate_dialogue", return_value=[]), \
+             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+            result = runner.invoke(
+                cli,
+                [
+                    "run",
+                    "-c", str(config_path),
+                    "--duo", "explorer",
+                    "-A",
+                    "-n",
+                    "https://example.com/article",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert captured["scene"], "Duo scene had not been applied yet at resolution time."
+        assert captured["voice_direction"], (
+            "Duo voice_direction had not been applied yet at resolution time."
+        )

@@ -71,10 +71,12 @@ OFFICIAL_GEMINI_VOICES = frozenset(
     }
 )
 
-#: Upper bound on a single ``voice_direction`` string, in characters.  The TTS
-#: preamble byte budget (see ``tests/test_tts_generator.py``) was measured with
-#: this envelope; longer notes require re-measuring and lowering
-#: ``llm_summarizer._MAX_CHUNK_BYTES``.
+#: Upper bound on a single ``voice_direction`` string, in characters.  Every
+#: byte here is one byte of TTS request that the dialogue chunk no longer gets:
+#: ``llm_summarizer._resolve_chunk_budget`` hands the chunker whatever the
+#: preamble leaves over, so a verbose direction silently buys more chunks, more
+#: requests and more audio splice points.  The envelope in
+#: ``tests/test_tts_generator.py`` is measured against this cap.
 MAX_VOICE_DIRECTION_CHARS = 160
 
 
@@ -383,8 +385,8 @@ class TestAcousticHygiene:
 
     @pytest.mark.parametrize("slug", sorted(BUILTIN_DUOS))
     def test_voice_directions_stay_within_the_measured_budget(self, slug):
-        # The preamble byte budget was measured against this envelope; growing
-        # a direction beyond it invalidates _MAX_CHUNK_BYTES.
+        # The preamble byte budget was measured against this envelope; a longer
+        # direction eats into the chunk budget _resolve_chunk_budget computes.
         for role in ("speaker1", "speaker2"):
             direction = BUILTIN_DUOS[slug][role]["voice_direction"]
             assert len(direction) <= MAX_VOICE_DIRECTION_CHARS, (
