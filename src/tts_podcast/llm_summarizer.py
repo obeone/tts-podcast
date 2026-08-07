@@ -28,23 +28,54 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Maximum UTF-8 byte size for a single dialogue chunk sent to TTS.
-# Gemini TTS caps the request text at roughly 4000 bytes, and
-# tts_generator._build_tts_prompt prepends a preamble to every chunk, so the
-# budget is (chunk + preamble) < 4000.
+# Byte budget for a single TTS request.  tts_generator._build_tts_prompt
+# prepends a preamble to every chunk, so the constraint is
+# (preamble + chunk) < _TTS_TEXT_LIMIT.
 #
-# The preamble grew when per-speaker `voice_direction` notes were added.
-# Measured worst case with `_build_tts_prompt`, using the largest plausible
-# inputs (two 160-char voice directions, a 200-char scene, a 50-char pace,
-# 11-char host names, 125-char personalities, and a long language name, which
-# the preamble header prints twice): 1568 bytes.
-# 2200 + 1568 = 3768, i.e. ~232 bytes of headroom below the 4000-byte cap.
-# The five built-in duos sit well inside that envelope (1278 to 1339 bytes of
-# preamble, so 3539 worst case).
-# Raising this constant, or lengthening the preamble envelope above, requires
-# re-measuring both together via
-# tests/test_tts_generator.py::TestPreambleByteBudget.
-_MAX_CHUNK_BYTES = 2200
+# Rather than pin the chunk size to a static worst case, the budget is resolved
+# per run by _resolve_chunk_budget(), which measures the *actual* preamble the
+# active config renders.  Any preamble at or under
+# (_TTS_TEXT_LIMIT - _TTS_PREAMBLE_HEADROOM - _MAX_CHUNK_BYTES) bytes keeps the
+# full _MAX_CHUNK_BYTES chunk; past that line the chunk shrinks byte for byte.
+#
+# That threshold, not "did this config's preamble grow", is the condition for
+# chunking exactly as before per-speaker voice directions existed.  The
+# pre-change code spent the whole 3000 bytes on the chunk and reserved no
+# headroom at all, so a config that declares no voice_direction but already
+# rendered a preamble above the line (long personalities, a scene, a long
+# language name printed twice) now gives up the difference even though its
+# preamble is byte-identical to what it always was.  Below the line it is
+# unchanged: same chunks, same TTS request count, same splice points between
+# independently generated audio segments.
+
+# Gemini TTS request text cap.  Inherited figure: it predates the
+# voice_direction work and was not established by measurement here, hence the
+# safety margin below rather than budgeting right up to it.
+_TTS_TEXT_LIMIT = 4000
+
+# Slack kept between (preamble + chunk) and the cap.  Two reasons, both about
+# the cap itself rather than about the chunker: the 4000 figure above is
+# inherited and approximate, and the API's own accounting unit is unknown (it
+# may count characters or tokens, not UTF-8 bytes, so a byte measurement here
+# is an estimate of what the server counts).  Note this margin does NOT cover
+# an over-budget single speaker turn: _split_dialogue_into_chunks emits such a
+# turn alone and oversized (see its Returns section), which no fixed margin
+# can absorb.
+_TTS_PREAMBLE_HEADROOM = 200
+
+# Upper bound on a chunk, i.e. the value used whenever the preamble is small.
+# This is exactly the pre-voice_direction value, so any config whose preamble
+# fits in (_TTS_TEXT_LIMIT - _TTS_PREAMBLE_HEADROOM - _MAX_CHUNK_BYTES) bytes
+# chunks identically to before that feature landed.  A config above that line
+# does not, whether or not it declares a voice_direction, because the
+# pre-change code kept no headroom.
+_MAX_CHUNK_BYTES = 3000
+
+# Floor on a chunk.  A pathologically long preamble (very long scene plus very
+# long voice directions) would otherwise shred the dialogue into unusably small
+# chunks, multiplying requests, cost and audio splice points.  Hitting this
+# floor means the config is over budget, and _resolve_chunk_budget warns.
+_MIN_CHUNK_BYTES = 1500
 
 # Maximum number of generation attempts before raising a hard error.
 _DIALOGUE_MAX_ATTEMPTS = 3
@@ -573,6 +604,96 @@ def _build_prompt(
     )
 
 
+def _resolve_chunk_budget(gemini_cfg: dict) -> int:
+    """
+    Compute the per-chunk byte budget for the active configuration.
+
+    Renders the TTS preamble for an empty chunk, measures it, and returns
+    whatever is left of the TTS request budget once a safety margin is kept.
+    The result is clamped to ``[_MIN_CHUNK_BYTES, _MAX_CHUNK_BYTES]``.
+
+    Measuring instead of assuming a worst case is what keeps ordinary configs
+    on the full ``_MAX_CHUNK_BYTES``: a config whose rendered preamble fits in
+    ``_TTS_TEXT_LIMIT - _TTS_PREAMBLE_HEADROOM - _MAX_CHUNK_BYTES`` bytes
+    produces exactly the same chunks, and therefore the same number of TTS
+    requests and audio splice points, as before per-speaker voice directions
+    existed.  That byte threshold is the condition, *not* "the config declares
+    no ``voice_direction``": the pre-change code spent the whole
+    ``_MAX_CHUNK_BYTES`` on the chunk and reserved no headroom, so a legacy
+    config already above the line (long personalities, a ``scene``, a long
+    language name) gives up a few bytes of chunk even though its preamble is
+    byte-identical to what it always rendered.
+
+    Parameters
+    ----------
+    gemini_cfg : dict
+        Resolved Gemini configuration section.  Only the keys read by
+        :func:`tts_podcast.tts_generator._build_tts_prompt` matter here
+        (``speaker1``, ``speaker2``, ``language``, ``tts_style``).
+
+    Returns
+    -------
+    int
+        Maximum UTF-8 byte size for one dialogue chunk.
+
+    Notes
+    -----
+    A raw budget below ``_MIN_CHUNK_BYTES`` means the preamble itself is too
+    large; the return value is clamped and a warning is emitted.  Without that
+    warning the symptom is a mid-episode 4xx from the TTS API, which
+    :func:`tts_podcast.retry.gemini_retry` deliberately does not retry, raised
+    only *after* the dialogue has been generated and billed.
+
+    Nothing here depends on the generated text, only on the resolved config, so
+    :mod:`tts_podcast.cli` calls this as soon as the duo is resolved, before the
+    research and dialogue stages run.  That is what makes the warning arrive
+    before the user is billed rather than alongside the request it condemns.
+    """
+    # Imported here, not at module scope, for two reasons: tts_generator
+    # imports this module only under TYPE_CHECKING, so a runtime import in this
+    # direction is safe today but stays local so it cannot become an import
+    # cycle later, and library callers that import llm_summarizer alone do not
+    # pay for the Gemini TTS dependencies unless they resolve a budget.  It
+    # buys nothing for CLI startup: cli.py imports tts_generator at module
+    # scope anyway.
+    from tts_podcast.tts_generator import _build_tts_prompt
+
+    # _build_tts_prompt indexes speaker blocks and their names directly, while
+    # generate_dialogue treats them as optional (names arrive as arguments).
+    # Fill in placeholders of a realistic length so measuring a sparse config
+    # cannot raise instead of returning a budget.
+    measurement_cfg = dict(gemini_cfg)
+    for key, placeholder in (("speaker1", "Speaker 1"), ("speaker2", "Speaker 2")):
+        block = dict(measurement_cfg.get(key) or {})
+        block.setdefault("name", placeholder)
+        measurement_cfg[key] = block
+
+    # An empty chunk renders the preamble and nothing else.
+    preamble_bytes = len(_build_tts_prompt("", measurement_cfg).encode("utf-8"))
+    raw_budget = _TTS_TEXT_LIMIT - _TTS_PREAMBLE_HEADROOM - preamble_bytes
+    budget = max(_MIN_CHUNK_BYTES, min(raw_budget, _MAX_CHUNK_BYTES))
+
+    if raw_budget < _MIN_CHUNK_BYTES:
+        logger.warning(
+            "TTS preamble is %d bytes, which leaves only %d bytes of the %d-byte "
+            "request budget for dialogue; clamping chunks to %d bytes. Requests may "
+            "be rejected. Shorten gemini.tts_style.scene, the speakers' "
+            "voice_direction, or their personality.",
+            preamble_bytes,
+            raw_budget,
+            _TTS_TEXT_LIMIT,
+            budget,
+        )
+
+    logger.debug(
+        "Chunk byte budget resolved to %d (preamble %d bytes, raw budget %d).",
+        budget,
+        preamble_bytes,
+        raw_budget,
+    )
+    return budget
+
+
 def _split_dialogue_into_chunks(
     dialogue_text: str,
     speaker1_name: str,
@@ -594,13 +715,19 @@ def _split_dialogue_into_chunks(
     speaker2_name : str
         Name of the second speaker, used to detect turn boundaries.
     max_bytes : int, optional
-        Maximum UTF-8 byte size per chunk, by default ``_MAX_CHUNK_BYTES``
-        (the TTS request budget minus the worst-case preamble).
+        Maximum UTF-8 byte size per chunk.  Defaults to the upper bound
+        ``_MAX_CHUNK_BYTES``; callers that know the active configuration should
+        pass the measured value from :func:`_resolve_chunk_budget`.
 
     Returns
     -------
     list[DialogueChunk]
-        Ordered list of dialogue chunks, each within the byte limit.
+        Ordered list of dialogue chunks.  Every chunk is within *max_bytes*
+        **except** one built from a single speaker turn that is itself larger
+        than *max_bytes*: turns are never split mid-line, so such a turn is
+        emitted alone and oversized.  A warning is logged when that happens,
+        naming the offending turn, because that request is the one the TTS API
+        is liable to reject.
     """
     speaker_prefixes = (
         f"{speaker1_name}:",
@@ -636,6 +763,21 @@ def _split_dialogue_into_chunks(
 
     for turn in turns:
         turn_bytes = len(turn.encode("utf-8")) + 1  # +1 for newline separator
+
+        # A turn is never split mid-line, so a turn bigger than the whole
+        # budget ends up alone in an oversized chunk.  That is the one request
+        # the TTS API is knowably liable to reject, and it is identifiable
+        # here, so say so rather than let it surface as a non-retryable 4xx
+        # from a worker thread.
+        if turn_bytes > max_bytes:
+            logger.warning(
+                "A single speaker turn is %d bytes, over the %d-byte chunk "
+                "budget; it will be sent unsplit and the TTS request may be "
+                "rejected. Turn starts with: %r",
+                turn_bytes,
+                max_bytes,
+                turn[:80],
+            )
 
         if current_chunk_lines and current_size + turn_bytes > max_bytes:
             # Flush current chunk
@@ -691,6 +833,7 @@ def generate_dialogue(
     progress: Progress | None = None,
     task_id: Any = None,
     research_notes: str = "",
+    max_bytes: int | None = None,
 ) -> list[DialogueChunk]:
     """
     Generate a two-host podcast dialogue from a list of articles.
@@ -724,6 +867,13 @@ def generate_dialogue(
     research_notes : str, optional
         Complementary research notes to inject into the prompt.  When empty,
         no research section is added (no-research path).
+    max_bytes : int or None, optional
+        Maximum UTF-8 byte size per dialogue chunk.  ``None`` (the default)
+        resolves it from *gemini_cfg* via :func:`_resolve_chunk_budget`, which
+        is what a direct library caller wants.  The CLI resolves it up front
+        instead, before the research and dialogue stages are billed, so an
+        over-budget config is reported before the user pays for it, and passes
+        the result here.
 
     Returns
     -------
@@ -860,4 +1010,11 @@ def generate_dialogue(
 
     logger.info("Received dialogue of %d chars from Gemini.", len(dialogue_text))
 
-    return _split_dialogue_into_chunks(dialogue_text, speaker1_name, speaker2_name)
+    return _split_dialogue_into_chunks(
+        dialogue_text,
+        speaker1_name,
+        speaker2_name,
+        max_bytes=(
+            max_bytes if max_bytes is not None else _resolve_chunk_budget(gemini_cfg)
+        ),
+    )
