@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 _TTS_MAX_WORKERS = 5
 
 # Default sampling temperature for the TTS model.
-# Each chunk is a long, standalone generation (~3000 bytes of text) started
+# Each chunk is a long, standalone generation (~2200 bytes of text) started
 # from the same calm preamble.  At temperature 1.0 the multi-speaker model
 # tends to drift toward over-expression as it reads on — an enthusiastic host
 # ramps up within a chunk and "runs out of breath", giving an audible
@@ -63,9 +63,10 @@ def _build_tts_prompt(chunk_text: str, gemini_cfg: dict) -> str:
         The raw dialogue text for this chunk (e.g. "Alex: (avec enthousiasme) ...").
     gemini_cfg : dict
         Resolved Gemini configuration section.  Uses ``speaker1``, ``speaker2``
-        (each with ``name`` and optional ``personality`` keys), ``language``
-        (default ``"French"``), an optional ``tts_style.scene`` string, and an
-        optional ``tts_style.pace`` string that provides a natural-language
+        (each with ``name``, an optional ``personality`` key and an optional
+        ``voice_direction`` key), ``language`` (default ``"French"``), an
+        optional ``tts_style.scene`` string, and an optional
+        ``tts_style.pace`` string that provides a natural-language
         description of the desired speaking pace (e.g. ``"slow and deliberate"``).
         When absent, defaults to ``"natural"``.
 
@@ -73,6 +74,16 @@ def _build_tts_prompt(chunk_text: str, gemini_cfg: dict) -> str:
     -------
     str
         The preamble followed by the dialogue text, ready for the TTS API.
+
+    Notes
+    -----
+    ``personality`` is read **verbatim** and is never mutated.  The
+    ``voice_direction`` key is TTS-only: it describes register, tempo,
+    articulation and breathing, and must never reach the dialogue prompt
+    built by :func:`tts_podcast.llm_summarizer._build_prompt`.  Conversely the
+    dialogue-only ``style_overlay`` key is never read here.  When a speaker
+    declares no ``voice_direction`` the rendered preamble is byte-identical to
+    the pre-``voice_direction`` output, so legacy configs sound unchanged.
     """
     s1 = gemini_cfg["speaker1"]
     s2 = gemini_cfg["speaker2"]
@@ -84,10 +95,40 @@ def _build_tts_prompt(chunk_text: str, gemini_cfg: dict) -> str:
     s1_personality = s1.get("personality", "enthusiastic and curious")
     s2_personality = s2.get("personality", "analytical and thoughtful")
 
+    def _direction_line(speaker: dict) -> str:
+        """
+        Render one speaker's voice direction line, or an empty string.
+
+        Parameters
+        ----------
+        speaker : dict
+            A ``speakerN`` config block.
+
+        Returns
+        -------
+        str
+            ``"Voice direction for <name>: <direction>\\n"`` when the speaker
+            declares a non-blank ``voice_direction``, otherwise ``""`` so the
+            preamble stays byte-identical for legacy configs.
+        """
+        # str() guards the library entry point: the CLI validates the type up
+        # front (duos.validate_speaker), but a caller building the config in
+        # Python must not be able to turn a stray non-string into an
+        # AttributeError inside the TTS thread pool.
+        raw = speaker.get("voice_direction") or ""
+        direction = raw.strip() if isinstance(raw, str) else str(raw).strip()
+        if not direction:
+            return ""
+        # Attribute the note to the host by name: an unattributed note lets the
+        # model average both deliveries, which is exactly the sameness we fix.
+        return f"Voice direction for {speaker['name']}: {direction}\n"
+
     preamble = (
         f"Audio profile: Two hosts of a {language} tech podcast, speaking in {language}.\n"
         f"{s1['name']} is {s1_personality}.\n"
+        f"{_direction_line(s1)}"
         f"{s2['name']} is {s2_personality}.\n"
+        f"{_direction_line(s2)}"
     )
     if scene:
         preamble += f"Scene: {scene}\n"
@@ -207,9 +248,9 @@ def generate_audio_chunks(
     gemini_cfg : dict
         Resolved Gemini configuration with keys:
         ``api_key``, ``tts_model``, ``speaker1`` ({``name``, ``voice``,
-        ``personality``}), ``speaker2`` ({``name``, ``voice``, ``personality``}),
-        ``language`` (default ``"French"``), and optional ``tts_style``
-        ({``scene``, ``temperature``}).
+        ``personality``, optional ``voice_direction``}), ``speaker2`` (same
+        shape), ``language`` (default ``"French"``), and optional
+        ``tts_style`` ({``scene``, ``pace``, ``temperature``}).
     token_tracker : TokenTracker or None, optional
         When provided, records token usage for every TTS API call.
     progress : rich.progress.Progress or None, optional
