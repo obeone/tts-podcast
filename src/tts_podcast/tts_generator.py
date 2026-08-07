@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 _TTS_MAX_WORKERS = 5
 
 # Default sampling temperature for the TTS model.
-# Each chunk is a long, standalone generation (~2200 bytes of text) started
+# Each chunk is a long, standalone generation (a couple of KB of text) started
 # from the same calm preamble.  At temperature 1.0 the multi-speaker model
 # tends to drift toward over-expression as it reads on — an enthusiastic host
 # ramps up within a chunk and "runs out of breath", giving an audible

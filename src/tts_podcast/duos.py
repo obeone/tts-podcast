@@ -53,10 +53,15 @@ preserving when editing this registry:
   rather than a trajectory (a note that ramps up would fight the
   anti-crescendo instruction in the TTS director's notes).
 
-The ``voice_direction`` strings also sit inside a byte budget: they are
-prepended to every TTS request alongside ``llm_summarizer._MAX_CHUNK_BYTES``
-of dialogue.  Keep each one under ~160 characters and re-measure
-:func:`tts_podcast.tts_generator._build_tts_prompt` before growing them.
+The ``voice_direction`` strings also sit inside a byte budget, and they do not
+ride for free.  Every byte a duo spends on directions comes straight out of the
+dialogue budget :func:`tts_podcast.llm_summarizer._resolve_chunk_budget` hands
+the chunker, so a longer direction means smaller chunks, more TTS requests per
+episode and more splice points between independently generated audio segments.
+Nothing needs re-measuring by hand: the ~160-character cap per direction is
+enforced by :class:`tests.test_duos.TestAcousticHygiene`, and
+:class:`tests.test_tts_generator.TestPreambleByteBudget` checks that every
+built-in duo still fits its own TTS request with room to spare.
 """
 
 from __future__ import annotations

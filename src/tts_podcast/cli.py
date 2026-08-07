@@ -46,7 +46,7 @@ from tts_podcast.duos import (
     validate_speaker,
 )
 from tts_podcast.link_extractor import extract_links
-from tts_podcast.llm_summarizer import generate_dialogue
+from tts_podcast.llm_summarizer import _resolve_chunk_budget, generate_dialogue
 from tts_podcast.local_loader import load_local_files
 from tts_podcast.models import Source
 from tts_podcast.report_generator import generate_report
@@ -619,6 +619,13 @@ def run(
                 ", ".join(applied_defaults),
             )
 
+    # The chunk byte budget depends only on the fields resolved above (speakers,
+    # language, tts_style), never on the generated text, so resolve it here
+    # rather than at the point of use.  An over-budget config warns now, before
+    # the research and dialogue calls are billed, instead of alongside the very
+    # request it condemns.
+    chunk_max_bytes: int = _resolve_chunk_budget(gemini_cfg)
+
     scrape_timeout: int = scraping_cfg.get("timeout_seconds", 10)
     cloak_fallback: bool = bool(scraping_cfg.get("cloak_fallback", False))
 
@@ -806,6 +813,7 @@ def run(
             progress=progress,
             task_id=llm_task,
             research_notes=research_notes,
+            max_bytes=chunk_max_bytes,
         )
         progress.update(
             llm_task,
