@@ -38,7 +38,13 @@ from rich.syntax import Syntax
 
 from tts_podcast.audio_exporter import encode_audio, export_audio
 from tts_podcast.config import ConfigError, load_config
-from tts_podcast.duos import BUILTIN_DUOS, DEFAULT_DUO, describe_duos, resolve_duo
+from tts_podcast.duos import (
+    BUILTIN_DUOS,
+    DEFAULT_DUO,
+    describe_duos,
+    resolve_duo,
+    validate_speaker,
+)
 from tts_podcast.link_extractor import extract_links
 from tts_podcast.llm_summarizer import generate_dialogue
 from tts_podcast.local_loader import load_local_files
@@ -576,6 +582,13 @@ def run(
         duo_name = DEFAULT_DUO
     try:
         resolved_duo = resolve_duo(duo_name, config_duos)
+        # A legacy speakerN block never goes through resolve_duo, so validate
+        # it here with the same rules: an unquoted YAML scalar or a list under
+        # voice_direction would otherwise only blow up inside the TTS thread
+        # pool, after the dialogue has already been generated and billed.
+        if resolved_duo is None and has_legacy_speakers:
+            for role in ("speaker1", "speaker2"):
+                validate_speaker("Config gemini", role, gemini_cfg.get(role))
     except click.BadParameter as exc:
         click.echo(f"[ERROR] {exc.format_message()}", err=True)
         sys.exit(1)
@@ -586,6 +599,25 @@ def run(
             "speaker2": resolved_duo["speaker2"],
         }
         logger.info("Using voice duo %r", duo_name)
+
+        # A duo may suggest a scene and a pace to match its dynamic.  These are
+        # defaults only: any value the user already set in gemini.tts_style
+        # wins, so a personal config is never silently overridden by a duo.
+        tts_style_cfg = dict(gemini_cfg.get("tts_style") or {})
+        applied_defaults: list[str] = []
+        for key in ("scene", "pace"):
+            duo_value = resolved_duo.get(key)
+            # A blank/absent user value counts as "not set" and is filled in.
+            if duo_value and not tts_style_cfg.get(key):
+                tts_style_cfg[key] = duo_value
+                applied_defaults.append(key)
+        gemini_cfg["tts_style"] = tts_style_cfg
+        if applied_defaults:
+            logger.debug(
+                "Duo %r supplied tts_style defaults for: %s",
+                duo_name,
+                ", ".join(applied_defaults),
+            )
 
     scrape_timeout: int = scraping_cfg.get("timeout_seconds", 10)
     cloak_fallback: bool = bool(scraping_cfg.get("cloak_fallback", False))
