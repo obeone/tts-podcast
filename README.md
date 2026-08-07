@@ -24,7 +24,8 @@ with Gemini's multi-speaker TTS — plus an optional folder of Markdown reports.
 | 🔍 | **Web-search queries** | Pass a natural-language topic with `-s`; the research stage investigates it via Google Search grounding. |
 | 🧠 | **Iterative research** | `--research N` runs *N* sequential grounded rounds, each drilling into the gaps the last one left. |
 | 🎭 | **Multi-voice TTS** | Two distinct Gemini voices with configurable personalities, scene, and delivery cues. |
-| 👥 | **Named voice duos** | Five built-in pairings (`contrast` default, `warm`, `explorer`, `journalist`, `debate`) — or define your own from all 30 prebuilt Gemini voices. |
+| 👥 | **Named voice duos** | Five built-in pairings (`contrast` default, `warm`, `explorer`, `journalist`, `debate`), each a different conversational dynamic. Or define your own from all 30 prebuilt Gemini voices. |
+| 🎚️ | **Per-speaker voice direction** | Give each host its own register, tempo, articulation, and breathing so the two never render with the same delivery. |
 | 🎨 | **Style & angle control** | Presets, free-text style, per-episode angle, and per-speaker overlays — without touching the baseline voice acting. |
 | 📑 | **Report folder** | Opt-in with `--report`: writes `overview.md`, `sources.md`, `script.md`, `research.md`, and `summary.md` next to the audio. |
 | 💸 | **Token & cost tracking** | Accumulates per-model token usage and estimates cost from configurable pricing. |
@@ -57,9 +58,9 @@ stdout. Want to hear the script before spending TTS tokens? Add `-n` for a dry r
 
 ## 👥 Voice duos
 
-A *duo* bundles both speakers — name, prebuilt Gemini voice, and baseline
-personality — under one slug, so you swap the whole pairing at once instead of
-editing `speaker1` / `speaker2` by hand.
+A *duo* bundles both speakers (name, prebuilt Gemini voice, baseline
+personality, and per-speaker voice direction) under one slug, so you swap the
+whole pairing at once instead of editing `speaker1` / `speaker2` by hand.
 
 ```bash
 tts-podcast duos          # list them (no API key needed)
@@ -68,22 +69,46 @@ tts-podcast run --duo journalist https://blog.example.com/article
 
 ### Built-in duos
 
-| Slug | Speaker 1 | Speaker 2 | Vibe |
+Each duo is a different *conversational dynamic*, not the same "excited host
+plus calm analyst" pairing under five names. The ten voices are all distinct,
+and inside a duo the two voice directions are opposed on register, tempo,
+articulation, and breathing.
+
+| Slug | Speaker 1 | Speaker 2 | Dynamic |
 |---|---|---|---|
-| `contrast` *(default)* | Puck (Upbeat) | Kore (Firm) | High timbre contrast — Google's own multi-speaker pairing |
-| `warm` | Sulafat (Warm) | Achird (Friendly) | Accessible, mainstream feel |
-| `explorer` | Fenrir (Excitable) | Sadaltager (Knowledgeable) | Excited explorer + calm expert; vulgarisation-friendly |
-| `journalist` | Zephyr (Bright) | Algieba (Smooth) | Fast-paced tech-journalism feel |
-| `debate` | Laomedeia (Upbeat) | Algenib (Gravelly) | Opposing viewpoints — optimist vs skeptic (pair with `--preset debate`) |
+| `contrast` *(default)* | Theo, voice Puck (Upbeat) | Nadia, voice Kore (Firm) | **Tempo flip.** An idea machine firing in bursts against an editor who lands it in one sentence. They agree, they just run at different speeds. |
+| `warm` | Vera, voice Gacrux (Mature) | Milo, voice Achird (Friendly) | **Transmission.** A settled storyteller hands the thread to the listener's stand-in. Long turn, short reaction, real silence. |
+| `explorer` | Iris, voice Achernar (Soft) | Sam, voice Sadachbia (Lively) | **Co-discovery.** Two non-experts approaching the same thing from opposite ends; nobody holds the answer, nobody corrects the other. |
+| `journalist` | Nora, voice Pulcherrima (Forward) | Marc, voice Charon (Informative) | **Role asymmetry.** A desk anchor asking short questions, a field correspondent answering long and sourced. |
+| `debate` | Robin, voice Autonoe (Bright) | Sasha, voice Algenib (Gravelly) | **Open conflict.** Optimist against skeptic, one escalating up and the other down (pair with `--preset debate`). |
+
+Each duo also ships a `scene` and a `pace` matching its dynamic. Those are
+defaults: anything you set in `gemini.tts_style.scene` / `.pace` wins.
 
 > Gemini doesn't officially document voice gender; pairings are curated from
 > each voice's [official descriptor][voices] plus community reports. Audition
 > them in [Google AI Studio][voices] before committing.
 
-### Custom duos
+### Voice direction
 
-Define your own under `gemini.duos`; they merge over the built-ins (same slug
-overrides, a new slug adds one):
+Two hosts used to come out sounding like the same person: the TTS preamble
+described *who* each host was but never *how* they spoke, so the model averaged
+both deliveries into one. `voice_direction` fixes that: an optional
+per-speaker Director's Note covering four axes and nothing else.
+
+- **register** (low chest, mid, bright upper, forward placement)
+- **tempo** (staccato bursts, metronomic, half speed)
+- **articulation** (hard attacks and clipped endings, legato, rounded vowels)
+- **breathing** (silent, snatched on the fly, a full beat at every stop)
+
+It is read **only** by the TTS preamble, so it changes how a line sounds and
+never what the script says. It is the mirror image of `style_overlay`, which is
+dialogue-only and never reaches TTS.
+
+Writing your own: pick one host, then make the other the opposite on all four
+axes. Describe a steady trait, not a trajectory ("low and slow", not "starts
+calm then builds"), and keep each note under ~160 characters (it rides along
+with every TTS request).
 
 ```yaml
 gemini:
@@ -91,15 +116,39 @@ gemini:
   duos:
     my_duo:
       description: "my custom pairing"
+      scene: "a bare table, two microphones facing each other"
+      pace: "quick exchanges, no dead air"
       speaker1:
         name: Robin
-        voice: Laomedeia   # Upbeat
-        personality: "techno-optimist; champions the upside"
+        voice: Autonoe     # Bright
+        personality: "a techno-optimist who champions the upside"
+        voice_direction: >-
+          Bright upper register, leaning into the mic. Quick, no gap between
+          sentences; pitch climbing through the clause, breath snatched on the fly.
       speaker2:
         name: Sasha
         voice: Algenib     # Gravelly
-        personality: "hard-nosed skeptic; probes risks and costs"
+        personality: "a hard-nosed skeptic who probes risks and costs"
+        voice_direction: >-
+          Low gravelly register, dropping in volume instead of rising. Slow, a
+          long beat before each answer; blunt consonants, falling endings.
 ```
+
+The same key works on legacy `gemini.speaker1` / `speaker2` blocks. Leave it out
+and the preamble is byte-identical to what it was before the feature existed, so
+existing configs sound exactly as they did.
+
+### Custom duos
+
+Duos defined under `gemini.duos` merge over the built-ins: the same slug
+overrides one, a new slug adds one. Only `name` and `voice` are required per
+speaker; `personality`, `voice_direction`, `description`, `scene`, and `pace`
+are all optional.
+
+Write `personality` as a noun phrase starting with `a` / `an` / `the`: the TTS
+preamble renders it as `<name> is <personality>.`, so a bare job title
+("desk anchor; presses with short questions") ships broken English to the model
+and pushes it back toward one averaged delivery.
 
 **Resolution precedence:** `--duo` › `gemini.default_duo` ›
 legacy `gemini.speaker1` / `speaker2` blocks › built-in `contrast`. A config
