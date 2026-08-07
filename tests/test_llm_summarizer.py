@@ -8,12 +8,14 @@ behaviour with a mocked Gemini client.
 from __future__ import annotations
 
 import logging
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tts_podcast.duos import BUILTIN_DUOS
 from tts_podcast.llm_summarizer import (
     DialogueChunk,
     _audio_tags_enabled,
@@ -537,6 +539,82 @@ class TestResearchDirective:
         directive_pos = prompt.index("MUST incorporate substantively")
         articles_pos = prompt.index("Articles:")
         assert instructions_pos < directive_pos < articles_pos
+
+
+class TestVoiceDirectionIsolation:
+    """
+    Mirror of the ``style_overlay`` invariant.
+
+    ``style_overlay`` steers what the hosts say and is dialogue-prompt-only;
+    ``voice_direction`` steers how they sound and is TTS-only.  A voice
+    direction leaking into the dialogue prompt would make the text model write
+    stage directions about register and breathing into the script itself.
+    """
+
+    _DIRECTION_1 = "ZZDIRECTIONONE low chest register, slow, legato, deep breaths"
+    _DIRECTION_2 = "ZZDIRECTIONTWO bright high register, fast staccato, clipped"
+
+    def _cfg_with_directions(self) -> dict:
+        """
+        Return a Gemini config whose two speakers both carry a voice direction.
+
+        Returns
+        -------
+        dict
+            A copy of ``GEMINI_CFG`` with ``voice_direction`` on both speakers.
+        """
+        return {
+            **GEMINI_CFG,
+            "speaker1": {**GEMINI_CFG["speaker1"], "voice_direction": self._DIRECTION_1},
+            "speaker2": {**GEMINI_CFG["speaker2"], "voice_direction": self._DIRECTION_2},
+        }
+
+    def test_voice_direction_never_reaches_the_dialogue_prompt(self):
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, self._cfg_with_directions(), "Alex", "Jordan")
+
+        prompt = _captured_prompt(mock_genai)
+        assert self._DIRECTION_1 not in prompt
+        assert self._DIRECTION_2 not in prompt
+        assert "voice direction" not in prompt.lower()
+
+    def test_dialogue_prompt_is_identical_with_and_without_directions(self):
+        mock_plain = _mock_genai_response(SHORT_DIALOGUE)
+        with patch("tts_podcast.llm_summarizer.genai", mock_plain):
+            generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        mock_directed = _mock_genai_response(SHORT_DIALOGUE)
+        with patch("tts_podcast.llm_summarizer.genai", mock_directed):
+            generate_dialogue(SAMPLE_ARTICLES, self._cfg_with_directions(), "Alex", "Jordan")
+
+        assert _captured_prompt(mock_directed) == _captured_prompt(mock_plain)
+
+    @pytest.mark.parametrize("slug", sorted(BUILTIN_DUOS))
+    def test_no_builtin_duo_direction_reaches_the_dialogue_prompt(self, slug):
+        duo = BUILTIN_DUOS[slug]
+        name1 = duo["speaker1"]["name"]
+        name2 = duo["speaker2"]["name"]
+        cfg = {**GEMINI_CFG, "speaker1": duo["speaker1"], "speaker2": duo["speaker2"]}
+        # The response must carry this duo's own speaker turns, otherwise the
+        # turn validation rejects it and retries instead of reaching the assert.
+        dialogue = f"{name1}: Bonjour.\n{name2}: Salut.\n"
+        mock_genai = _mock_genai_response(dialogue)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, cfg, name1, name2)
+
+        prompt = _captured_prompt(mock_genai)
+        for role in ("speaker1", "speaker2"):
+            assert duo[role]["voice_direction"] not in prompt
+            # The baseline personality is what the dialogue prompt *does* use.
+            assert duo[role]["personality"] in prompt
+
+    def test_dialogue_prompt_builders_never_mention_the_key(self):
+        # Static guard: neither the prompt builder nor its caller may read
+        # voice_direction, whatever the runtime path.
+        assert "voice_direction" not in inspect.signature(_build_prompt).parameters
+        assert "voice_direction" not in inspect.getsource(_build_prompt)
+        assert "voice_direction" not in inspect.getsource(generate_dialogue)
 
 
 class TestNoFlagsByteIdentical:
