@@ -29,9 +29,22 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Maximum UTF-8 byte size for a single dialogue chunk sent to TTS.
-# Set to 3000 to leave ~600-800 bytes of headroom for the TTS preamble
-# that tts_generator.py prepends before sending to the Gemini TTS API.
-_MAX_CHUNK_BYTES = 3000
+# Gemini TTS caps the request text at roughly 4000 bytes, and
+# tts_generator._build_tts_prompt prepends a preamble to every chunk, so the
+# budget is (chunk + preamble) < 4000.
+#
+# The preamble grew when per-speaker `voice_direction` notes were added.
+# Measured worst case with `_build_tts_prompt`, using the largest plausible
+# inputs (two 160-char voice directions, a 200-char scene, a 50-char pace,
+# 11-char host names, 125-char personalities, and a long language name, which
+# the preamble header prints twice): 1568 bytes.
+# 2200 + 1568 = 3768, i.e. ~232 bytes of headroom below the 4000-byte cap.
+# The five built-in duos sit well inside that envelope (1278 to 1339 bytes of
+# preamble, so 3539 worst case).
+# Raising this constant, or lengthening the preamble envelope above, requires
+# re-measuring both together via
+# tests/test_tts_generator.py::TestPreambleByteBudget.
+_MAX_CHUNK_BYTES = 2200
 
 # Maximum number of generation attempts before raising a hard error.
 _DIALOGUE_MAX_ATTEMPTS = 3
@@ -581,7 +594,8 @@ def _split_dialogue_into_chunks(
     speaker2_name : str
         Name of the second speaker, used to detect turn boundaries.
     max_bytes : int, optional
-        Maximum UTF-8 byte size per chunk, by default 3000.
+        Maximum UTF-8 byte size per chunk, by default ``_MAX_CHUNK_BYTES``
+        (the TTS request budget minus the worst-case preamble).
 
     Returns
     -------
