@@ -138,6 +138,20 @@ The same key works on legacy `gemini.speaker1` / `speaker2` blocks. Leave it out
 and the preamble is byte-identical to what it was before the feature existed, so
 existing configs sound exactly as they did.
 
+A voice direction does cost room: it rides at the top of every TTS request,
+alongside the dialogue itself. The tool measures the preamble your config
+actually renders and sizes the dialogue chunks against what is left. As long as
+that whole preamble stays at or under 800 bytes, the chunks keep their full
+size, so the request count and the number of audio joins are unchanged. Past
+that, chunks shrink byte for byte and an episode is cut into a few more pieces.
+
+Voice directions are not the only thing in the preamble: the host personalities,
+`tts_style.scene` and `tts_style.pace` all sit in it too. A config with no voice
+directions but a long `scene` can still cross the 800-byte line and get slightly
+smaller chunks than it used to. Keeping each direction under about 160
+characters and the scene to one line leaves comfortable room; when a config
+really does run out, the tool logs a warning naming the fields to trim.
+
 ### Custom duos
 
 Duos defined under `gemini.duos` merge over the built-ins: the same slug
