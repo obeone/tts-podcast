@@ -17,14 +17,18 @@ import pytest
 
 from tts_podcast.duos import BUILTIN_DUOS
 from tts_podcast.llm_summarizer import (
+    _MAX_CHUNK_BYTES,
     DialogueChunk,
     _audio_tags_enabled,
     _build_prompt,
     _build_thinking_config,
     _has_speaker_turns,
+    _resolve_chunk_budget,
+    _split_dialogue_into_chunks,
     generate_dialogue,
 )
 from tts_podcast.style_presets import STYLE_PRESETS
+from tts_podcast.tts_generator import _build_tts_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -849,3 +853,266 @@ class TestThinkingConfigWiring:
         # thinking_config should be absent or None
         thinking = getattr(config_obj, "thinking_config", None)
         assert thinking is None
+
+
+class TestChunkBudgetWiring:
+    """
+    ``generate_dialogue`` must chunk with the budget resolved from the active
+    config, not with the module-level upper bound.
+
+    Testing ``_resolve_chunk_budget`` in isolation is not enough: a budget that
+    is computed and then never passed down is exactly the silent failure this
+    project has been bitten by before (the same shape as a Gemini call that
+    forgets to thread ``token_tracker`` through and silently undercounts cost).
+    Here the symptom would be invisible too — chunks keep being produced, they
+    are simply too big, and the TTS API rejects them mid-episode with a 4xx the
+    retry decorator deliberately does not retry.
+    """
+
+    #: A duo that ships two voice directions plus a scene and a pace, i.e. the
+    #: configuration shape whose preamble is large enough to move the budget.
+    _DUO = BUILTIN_DUOS["explorer"]
+
+    @classmethod
+    def _heavy_cfg(cls) -> dict:
+        """
+        Return a Gemini config whose preamble is big enough to lower the budget.
+
+        Returns
+        -------
+        dict
+            ``GEMINI_CFG`` with a built-in duo's speakers, scene and pace.
+        """
+        return {
+            **GEMINI_CFG,
+            "speaker1": cls._DUO["speaker1"],
+            "speaker2": cls._DUO["speaker2"],
+            "tts_style": {"scene": cls._DUO["scene"], "pace": cls._DUO["pace"]},
+        }
+
+    @staticmethod
+    def _long_dialogue(name1: str, name2: str, turns: int = 120) -> str:
+        """
+        Build a dialogue long enough to span several chunks.
+
+        Parameters
+        ----------
+        name1, name2 : str
+            Speaker names, alternated one per line.
+        turns : int, optional
+            Number of speaker turns to generate.
+
+        Returns
+        -------
+        str
+            A dialogue in the strict ``SpeakerName: text`` output format.
+        """
+        lines = []
+        for i in range(turns):
+            speaker = name1 if i % 2 == 0 else name2
+            # ~110 bytes per turn: well under any budget, so no single turn can
+            # overflow a chunk on its own and mask the bound under test.
+            lines.append(f"{speaker}: Point numero {i}, {'du contenu parle ' * 5}voila.")
+        return "\n".join(lines) + "\n"
+
+    def _capture_split_kwargs(self, cfg: dict) -> dict:
+        """
+        Run ``generate_dialogue`` and return the chunker's keyword arguments.
+
+        Parameters
+        ----------
+        cfg : dict
+            Resolved Gemini config section to run against.
+
+        Returns
+        -------
+        dict
+            The kwargs ``generate_dialogue`` passed to
+            ``_split_dialogue_into_chunks``.
+        """
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai), patch(
+            "tts_podcast.llm_summarizer._split_dialogue_into_chunks"
+        ) as split:
+            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
+        assert split.call_count == 1
+        return split.call_args.kwargs
+
+    def test_resolved_budget_reaches_the_chunker(self):
+        cfg = self._heavy_cfg()
+        expected = _resolve_chunk_budget(cfg)
+        # Guard the guard: if this duo happened to resolve to the upper bound,
+        # the assertion below would also pass with the budget left unwired.
+        assert expected < _MAX_CHUNK_BYTES, (
+            "Fixture no longer has a preamble large enough to move the budget; "
+            "pick a heavier config."
+        )
+        assert self._capture_split_kwargs(cfg)["max_bytes"] == expected
+
+    def test_legacy_config_still_chunks_at_the_upper_bound(self):
+        # GEMINI_CFG declares no voice_direction, no scene and no pace: the
+        # pre-change chunking must be preserved exactly.
+        assert self._capture_split_kwargs(GEMINI_CFG)["max_bytes"] == _MAX_CHUNK_BYTES
+
+    def test_legacy_chunking_is_byte_identical_to_the_pre_change_split(self):
+        # The regression guard end to end: same chunk texts, same chunk count,
+        # therefore the same number of TTS requests and the same audio splice
+        # points a legacy user got before the budget became dynamic.
+        dialogue = self._long_dialogue("Alex", "Jordan")
+        mock_genai = _mock_genai_response(dialogue)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan")
+
+        pre_change = _split_dialogue_into_chunks(
+            dialogue, "Alex", "Jordan", max_bytes=3000
+        )
+        assert [c.text for c in chunks] == [c.text for c in pre_change]
+        assert len(chunks) > 1, "Fixture is too short to exercise chunking at all."
+
+    def test_a_heavy_config_produces_more_chunks_than_a_legacy_one(self):
+        # The flip side: the budget must actually bite when the preamble is
+        # large, otherwise requests would go out over the TTS text limit.
+        dialogue = self._long_dialogue("Alex", "Jordan")
+        cfg = self._heavy_cfg()
+
+        mock_heavy = _mock_genai_response(dialogue)
+        with patch("tts_podcast.llm_summarizer.genai", mock_heavy):
+            heavy_chunks = generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
+
+        mock_legacy = _mock_genai_response(dialogue)
+        with patch("tts_podcast.llm_summarizer.genai", mock_legacy):
+            legacy_chunks = generate_dialogue(
+                SAMPLE_ARTICLES, GEMINI_CFG, "Alex", "Jordan"
+            )
+
+        assert len(heavy_chunks) > len(legacy_chunks)
+
+    @pytest.mark.parametrize("slug", sorted(BUILTIN_DUOS))
+    def test_every_generated_request_fits_the_tts_text_limit(self, slug):
+        # The end-to-end statement of the guarantee: take the chunks the
+        # pipeline really produces, render the request the TTS stage really
+        # sends, and check the bytes on the wire.
+        duo = BUILTIN_DUOS[slug]
+        name1 = duo["speaker1"]["name"]
+        name2 = duo["speaker2"]["name"]
+        cfg = {
+            **GEMINI_CFG,
+            "speaker1": duo["speaker1"],
+            "speaker2": duo["speaker2"],
+            "tts_style": {"scene": duo["scene"], "pace": duo["pace"]},
+        }
+        dialogue = self._long_dialogue(name1, name2)
+        mock_genai = _mock_genai_response(dialogue)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            chunks = generate_dialogue(SAMPLE_ARTICLES, cfg, name1, name2)
+
+        assert len(chunks) > 1
+        for chunk in chunks:
+            request_bytes = len(_build_tts_prompt(chunk.text, cfg).encode("utf-8"))
+            assert request_bytes <= 3800, (
+                f"Duo {slug!r} chunk {chunk.index}: {request_bytes}-byte TTS request, "
+                "over the 3800-byte working ceiling."
+            )
+
+    def test_explicit_max_bytes_wins_over_the_resolved_budget(self):
+        # The CLI resolves the budget up front, before research and the
+        # dialogue call are billed, and hands it down.  If generate_dialogue
+        # ignored it and re-resolved, that early resolution would be decorative.
+        cfg = self._heavy_cfg()
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai), patch(
+            "tts_podcast.llm_summarizer._split_dialogue_into_chunks"
+        ) as split:
+            generate_dialogue(
+                SAMPLE_ARTICLES, cfg, "Alex", "Jordan", max_bytes=1234
+            )
+        assert split.call_args.kwargs["max_bytes"] == 1234
+
+    def test_explicit_max_bytes_skips_the_measurement_entirely(self):
+        # A caller that already knows the budget must not pay for rendering the
+        # preamble a second time, and must not trigger a duplicate over-budget
+        # warning for a config the CLI has already reported on.
+        cfg = self._heavy_cfg()
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai), patch(
+            "tts_podcast.llm_summarizer._resolve_chunk_budget"
+        ) as resolve:
+            generate_dialogue(
+                SAMPLE_ARTICLES, cfg, "Alex", "Jordan", max_bytes=2000
+            )
+        assert resolve.call_count == 0
+
+    def test_max_bytes_defaults_to_resolving_from_the_config(self):
+        # Direct library callers pass nothing and must keep the measured
+        # behaviour rather than silently fall back to the upper bound.
+        cfg = self._heavy_cfg()
+        expected = _resolve_chunk_budget(cfg)
+        assert expected < _MAX_CHUNK_BYTES, (
+            "Fixture no longer has a preamble large enough to move the budget."
+        )
+        assert self._capture_split_kwargs(cfg)["max_bytes"] == expected
+
+
+class TestOversizedSpeakerTurn:
+    """
+    A speaker turn is never split mid-line, so a turn bigger than the whole
+    chunk budget is emitted alone and over budget.
+
+    No safety margin can absorb that (the turn can be arbitrarily long), and it
+    is the one request the TTS API is knowably liable to reject.  The contract
+    is therefore: emit it, but say so, at chunking time, where the offending
+    turn is still identifiable, rather than as a non-retryable 4xx from a
+    worker thread once the dialogue is already billed.
+    """
+
+    @staticmethod
+    def _dialogue_with_a_monologue(turn_bytes: int) -> str:
+        """
+        Build a dialogue containing one deliberately oversized turn.
+
+        Parameters
+        ----------
+        turn_bytes : int
+            Approximate UTF-8 size of the oversized turn.
+
+        Returns
+        -------
+        str
+            A dialogue in the strict ``SpeakerName: text`` output format.
+        """
+        return (
+            "Alex: Short opener.\n"
+            f"Jordan: {'mot ' * (turn_bytes // 4)}fin.\n"
+            "Alex: Short closer.\n"
+        )
+
+    def test_oversized_turn_is_emitted_unsplit(self):
+        dialogue = self._dialogue_with_a_monologue(3000)
+        chunks = _split_dialogue_into_chunks(dialogue, "Alex", "Jordan", max_bytes=2000)
+        oversized = [c for c in chunks if len(c.text.encode("utf-8")) > 2000]
+        assert len(oversized) == 1, (
+            "The long turn must land alone in its own chunk, unsplit: splitting "
+            "mid-turn would cut a sentence in half in the audio."
+        )
+        assert oversized[0].text.startswith("Jordan:")
+
+    def test_oversized_turn_warns_once_and_names_the_turn(self, caplog):
+        dialogue = self._dialogue_with_a_monologue(3000)
+        with caplog.at_level(logging.WARNING, logger="tts_podcast.llm_summarizer"):
+            _split_dialogue_into_chunks(dialogue, "Alex", "Jordan", max_bytes=2000)
+        messages = [record.getMessage() for record in caplog.records]
+        assert len(messages) == 1, f"Expected exactly one warning, got {messages!r}"
+        assert "2000" in messages[0]
+        assert "Jordan:" in messages[0], (
+            "The warning must quote the start of the offending turn, otherwise "
+            "the user cannot find it in a 10000-word script."
+        )
+
+    def test_no_warning_when_every_turn_fits(self):
+        # The complement: a normal script must stay silent, or the warning is
+        # noise and gets ignored the day it matters.
+        with patch.object(logging.getLogger("tts_podcast.llm_summarizer"), "warning") as warn:
+            _split_dialogue_into_chunks(
+                SHORT_DIALOGUE, "Alex", "Jordan", max_bytes=_MAX_CHUNK_BYTES
+            )
+        assert warn.call_count == 0
