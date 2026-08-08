@@ -18,6 +18,7 @@ import trafilatura
 from trafilatura.settings import use_config
 
 from tts_podcast import cloak_fetcher
+from tts_podcast.body_recovery import extract_body_text
 from tts_podcast.link_extractor import collect_document_links
 from tts_podcast.models import Source
 from tts_podcast.user_agent import BROWSER_USER_AGENT
@@ -79,8 +80,15 @@ def _extract_from_html(url: str, downloaded: str) -> Source:
         Populated source with ``scraped_ok=True`` when non-empty content was
         extracted; otherwise a source with empty ``full_text``/``summary`` and
         ``scraped_ok=False``.
+
+    Notes
+    -----
+    The body goes through :func:`~tts_podcast.body_recovery.extract_body_text`
+    rather than :func:`trafilatura.extract` directly, so a page whose body
+    detector locks onto one section of many is recovered instead of silently
+    yielding a fragment.
     """
-    text = trafilatura.extract(downloaded)
+    text = extract_body_text(downloaded, origin=url)
     metadata = trafilatura.extract_metadata(downloaded)
     title = (metadata.title if metadata and metadata.title else "") or _title_fallback(url)
 
