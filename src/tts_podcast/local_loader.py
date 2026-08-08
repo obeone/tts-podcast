@@ -13,16 +13,10 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import re
-
 import trafilatura
 
-from tts_podcast.link_extractor import extract_links_from_text
+from tts_podcast.link_extractor import collect_document_links
 from tts_podcast.models import Source
-
-# Regex for absolute http(s) links inside markdown output from trafilatura.
-# Mirrors the same pattern in web_scraper so both paths parse identically.
-_MD_LINK_RE = re.compile(r"\]\((https?://[^)\s]+)\)")
 
 if TYPE_CHECKING:
     from rich.progress import Progress
@@ -60,13 +54,15 @@ def _read_text(path: Path) -> str:
 
 def _read_html(path: Path) -> tuple[str, list[str]]:
     """
-    Read an HTML file and extract its main content and body links via trafilatura.
+    Read an HTML file and extract its main content and outbound links.
 
     Runs two trafilatura passes: a plain-text extraction for ``full_text``
     (keeping it clean and link-free) and a markdown extraction with
-    ``include_links=True`` to capture hyperlinks scoped to the article body
-    (nav/footer links are excluded by trafilatura's body detector).  The link
-    list is deduplicated, preserving order.
+    ``include_links=True`` to capture hyperlinks scoped to the article body.
+    :func:`~tts_podcast.link_extractor.collect_document_links` then orders
+    those body links ahead of the document's remaining anchors, so a file
+    whose body detector under-selects still yields candidates.  The list is
+    deduplicated, preserving order.
 
     Parameters
     ----------
@@ -83,25 +79,17 @@ def _read_html(path: Path) -> tuple[str, list[str]]:
     raw = path.read_text(encoding="utf-8", errors="replace")
     text = trafilatura.extract(raw) or ""
 
-    # Capture article-body links via a second trafilatura pass with
+    # Capture outbound links via a second trafilatura pass with
     # include_links=True.  Plain-text extraction drops all hrefs, so the
     # link-following stage would find 0 candidates without this step.
-    links: list[str] = []
+    # No base_url: a relative href in a local file resolves to a path on this
+    # machine, not to anything the follower could fetch, so only absolute
+    # anchors are kept.
     try:
         links_md = trafilatura.extract(raw, include_links=True, output_format="markdown") or ""
     except Exception:  # noqa: BLE001
         links_md = ""
-    if links_md:
-        seen_links: set[str] = set()
-        for m in _MD_LINK_RE.finditer(links_md):
-            href = m.group(1)
-            if href not in seen_links:
-                seen_links.add(href)
-                links.append(href)
-        for href in extract_links_from_text(links_md):
-            if href not in seen_links:
-                seen_links.add(href)
-                links.append(href)
+    links = collect_document_links(links_md, raw)
 
     return text, links
 
