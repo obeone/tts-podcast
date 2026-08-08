@@ -189,6 +189,10 @@ tts-podcast run -n -s "agentic AI memory systems"
 # Follow interesting links found inside the inputs (2 hops deep)
 tts-podcast run -L --follow-depth 2 https://blog.example.com/article
 
+# Same, but fetch at most 8 pages in total, 4 per hop
+tts-podcast run -L --follow-depth 2 --follow-max-links 8 --follow-max-links-per-hop 4 \
+  https://blog.example.com/article
+
 # Mixed: URL + local file + search query in one episode
 tts-podcast run -n https://blog.example.com/article -f notes.md -s "follow-up topic"
 
@@ -231,6 +235,8 @@ tts-podcast run --duo debate --preset debate https://blog.example.com/article
 | `-R, --research N` | Number of Google-Search-grounded research rounds (default `0`). |
 | `-L, --follow-links` | After scraping inputs, follow interesting links inside them (heuristic pre-filter + LLM relevance judge). Fetched pages feed research and dialogue. |
 | `--follow-depth N` | Link-following hops when `--follow-links` is set (default `1`). |
+| `--follow-max-links N` | Cap on the total number of links fetched across all hops (default `20`, config `follow.max_links_total`). |
+| `--follow-max-links-per-hop N` | Cap on the number of links fetched per hop (default `5`, config `follow.max_links_per_level`). |
 | `--duo NAME` | Named voice duo (`contrast`, `warm`, `explorer`, `journalist`, `debate`). |
 | `--preset NAME` | Style preset: `casual`, `academic`, `humorous`, `debate`, `vulgarized`, or `none`. |
 | `--style TEXT` | Free-text style guidance (≤ 500 chars). Composes with `--preset`. |

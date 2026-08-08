@@ -150,10 +150,12 @@ research:
 # recurses into kept pages up to --follow-depth hops (default 1).
 follow:
   # Maximum number of links fetched per hop (keeps cost and runtime bounded).
+  # Overridable per run with --follow-max-links-per-hop.
   max_links_per_level: 5
   # Global cap on the cumulative number of links fetched across ALL hops.
   # Bounds total cost independently of depth × max_links_per_level: once this
   # many links have been fetched, the traversal stops.
+  # Overridable per run with --follow-max-links.
   max_links_total: 20
   # Optional override of the model used for the content-relevance judgement.
   # Defaults to gemini.text_model when omitted.
