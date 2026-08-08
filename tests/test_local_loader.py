@@ -12,6 +12,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import trafilatura
+
+from tests.fixtures.truncating_page import (
+    ARTICLE_TITLES,
+    newsletter_html,
+    plain_article_html,
+)
 
 from tts_podcast.local_loader import load_local_file, load_local_files
 
@@ -317,3 +324,30 @@ class TestLoadLocalFiles:
         load_local_files([f], progress=progress, task_id=task_id)
 
         progress.advance.assert_called_once_with(task_id)
+
+
+class TestLoadLocalFileHtmlBodyRecovery:
+    """The local HTML path recovers a truncated article body (issue #21)."""
+
+    def test_full_text_covers_every_section_of_a_multi_section_page(
+        self, tmp_path: Path
+    ) -> None:
+        """A saved newsletter is loaded whole, not one section of it."""
+        f = tmp_path / "digest.html"
+        f.write_text(newsletter_html(), encoding="utf-8")
+
+        src = load_local_file(f)
+
+        assert src.scraped_ok is True
+        assert [t for t in ARTICLE_TITLES if t not in src.full_text] == []
+
+    def test_clean_page_full_text_is_the_plain_extraction(self, tmp_path: Path) -> None:
+        """Files trafilatura handles correctly keep their exact body text."""
+        html = plain_article_html()
+        f = tmp_path / "article.html"
+        f.write_text(html, encoding="utf-8")
+
+        src = load_local_file(f)
+
+        assert src.scraped_ok is True
+        assert src.full_text == trafilatura.extract(html)

@@ -11,6 +11,11 @@ from unittest.mock import patch
 
 import trafilatura
 
+from tests.fixtures.truncating_page import (
+    ARTICLE_TITLES,
+    newsletter_html,
+    plain_article_html,
+)
 from tts_podcast.web_scraper import scrape_url, scrape_urls
 
 
@@ -346,3 +351,25 @@ class TestSourceLinksPopulation:
 
         assert src.scraped_ok is False
         assert src.links == []
+
+
+class TestBodyRecovery:
+    """The scrape path recovers a truncated article body (issue #21)."""
+
+    def test_full_text_covers_every_section_of_a_multi_section_page(self) -> None:
+        """A page whose body detector under-selects is scraped whole."""
+        html = newsletter_html()
+        with patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=html):
+            src = scrape_url("https://example.com/digest")
+
+        assert src.scraped_ok is True
+        assert [t for t in ARTICLE_TITLES if t not in src.full_text] == []
+
+    def test_clean_page_full_text_is_the_plain_extraction(self) -> None:
+        """Pages trafilatura handles correctly keep their exact body text."""
+        html = plain_article_html()
+        with patch("tts_podcast.web_scraper.trafilatura.fetch_url", return_value=html):
+            src = scrape_url("https://example.com/article")
+
+        assert src.scraped_ok is True
+        assert src.full_text == trafilatura.extract(html)
