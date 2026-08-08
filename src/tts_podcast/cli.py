@@ -323,6 +323,63 @@ def _resolve_output_path(
     return out_path, fmt
 
 
+def _resolve_follow_cap(
+    flag: str,
+    config_key: str,
+    cli_value: int | None,
+    config_value: object,
+    default: int,
+) -> int:
+    """
+    Resolve one link-following cap from the CLI flag, the config, or the default.
+
+    Precedence is the usual one: an explicit CLI value wins over the config
+    key, which wins over the built-in default.  Both user-supplied sources are
+    validated here rather than at the point of use, so an unusable cap aborts
+    the run with a readable message instead of crashing on an ``int()``
+    coercion or silently turning the whole follow stage into a no-op (a cap of
+    ``0`` fetches nothing at all, which looks like a broken feature).
+
+    Parameters
+    ----------
+    flag : str
+        CLI flag name, quoted in the error message for a bad *cli_value*.
+    config_key : str
+        Dotted config key, quoted in the error message for a bad *config_value*.
+    cli_value : int or None
+        Value passed on the command line, or ``None`` when the flag is omitted.
+    config_value : object
+        Raw value read from the config file, or ``None`` when the key is absent.
+    default : int
+        Built-in cap used when neither source provides a value.
+
+    Returns
+    -------
+    int
+        The resolved cap, guaranteed ``>= 1``.
+    """
+    if cli_value is not None:
+        source, raw = flag, cli_value
+    elif config_value is not None:
+        source, raw = config_key, config_value
+    else:
+        return default
+
+    try:
+        resolved: int | None = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        # A config value that is not a number at all (list, mapping, "five").
+        resolved = None
+
+    if resolved is None or resolved < 1:
+        click.echo(
+            f"[ERROR] {source} must be a positive integer (got {raw!r}).",
+            err=True,
+        )
+        sys.exit(1)
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # Top-level group
 # ---------------------------------------------------------------------------
@@ -522,6 +579,26 @@ def cli() -> None:
         "previous hop."
     ),
 )
+@click.option(
+    "--follow-max-links",
+    "follow_max_links",
+    type=int,
+    default=None,
+    help=(
+        "Cap on the TOTAL number of links fetched across all hops when "
+        "--follow-links is set (default 20). Overrides follow.max_links_total."
+    ),
+)
+@click.option(
+    "--follow-max-links-per-hop",
+    "follow_max_links_per_hop",
+    type=int,
+    default=None,
+    help=(
+        "Cap on the number of links fetched per hop when --follow-links is set "
+        "(default 5). Overrides follow.max_links_per_level."
+    ),
+)
 def run(
     inputs: tuple[str, ...],
     files: tuple[Path, ...],
@@ -544,6 +621,8 @@ def run(
     angle: str | None,
     follow_links: bool,
     follow_depth: int | None,
+    follow_max_links: int | None,
+    follow_max_links_per_hop: int | None,
 ) -> None:
     """Fetch URLs, local files, or web search queries and generate a two-voice podcast MP3."""
     load_dotenv()
@@ -708,9 +787,29 @@ def run(
     if follow_depth is not None and not follow_links:
         logger.warning("--follow-depth is ignored without --follow-links.")
 
+    # Both caps follow the same CLI > config > default precedence.  They are
+    # resolved even when --follow-links is absent so a bad value is reported up
+    # front rather than at the moment the stage would have run.
     follow_cfg = cfg.get("follow", {}) or {}
-    max_links_per_level = int(follow_cfg.get("max_links_per_level", 5))
-    max_links_total = int(follow_cfg.get("max_links_total", 20))
+    max_links_per_level = _resolve_follow_cap(
+        "--follow-max-links-per-hop",
+        "follow.max_links_per_level",
+        follow_max_links_per_hop,
+        follow_cfg.get("max_links_per_level"),
+        default=5,
+    )
+    max_links_total = _resolve_follow_cap(
+        "--follow-max-links",
+        "follow.max_links_total",
+        follow_max_links,
+        follow_cfg.get("max_links_total"),
+        default=20,
+    )
+    if not follow_links and (follow_max_links is not None or follow_max_links_per_hop is not None):
+        logger.warning(
+            "--follow-max-links / --follow-max-links-per-hop are ignored "
+            "without --follow-links.",
+        )
     if follow_cfg.get("model"):
         gemini_cfg = {**gemini_cfg, "follow": {"model": follow_cfg.get("model")}}
 
