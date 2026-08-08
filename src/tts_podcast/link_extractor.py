@@ -12,13 +12,25 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from html import unescape
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 if TYPE_CHECKING:
     from tts_podcast.models import Source
 
 logger = logging.getLogger(__name__)
+
+# Absolute http(s) target of a markdown link, i.e. the URL in [text](https://…),
+# which is what trafilatura emits with include_links=True.
+_MD_LINK_RE = re.compile(r"\]\((https?://[^)\s]+)\)")
+
+# href of any HTML anchor, single or double quoted.  A regex rather than a real
+# parser is deliberate: lxml is only a transitive dependency (via trafilatura),
+# and the cost of a missed exotic anchor is one lost candidate among many, not
+# a failure — every href collected here still has to clear is_followable_link
+# and the relevance judge.
+_ANCHOR_HREF_RE = re.compile(r"""<a\b[^>]*?\bhref\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -394,6 +406,166 @@ def extract_links_from_text(text: str) -> list[str]:
             seen.add(url)
             urls.append(url)
     return urls
+
+
+def _unescape_fully(href: str, limit: int = 3) -> str:
+    """
+    Undo HTML entity escaping on *href*, including double escaping.
+
+    A single :func:`html.unescape` is the correct reading of the HTML spec, but
+    pages that build links by templating an already-escaped URL emit
+    ``&amp;amp;``, which one pass leaves as ``&amp;``.  The result is the same
+    destination reaching us under two spellings, so it survives deduplication
+    and burns two candidate slots on one page (observed on a real newsletter).
+    Unescaping to a fixed point collapses them.
+
+    The theoretical cost is a URL whose query string legitimately contains the
+    literal text ``&amp;``; that URL would be rewritten. It is not a real risk
+    here, and the alternative is fetching the same page twice.
+
+    Parameters
+    ----------
+    href : str
+        Raw href as it appeared in the document.
+    limit : int, optional
+        Maximum unescape passes, by default 3.  Bounds the loop rather than
+        trusting the input to converge.
+
+    Returns
+    -------
+    str
+        The href with entities resolved.
+    """
+    for _ in range(limit):
+        unescaped = unescape(href)
+        if unescaped == href:
+            break
+        href = unescaped
+    return href
+
+
+def _site_of(url: str) -> str:
+    """
+    Return a coarse site key for *url*, used only to order candidates.
+
+    Compares the last two labels of the hostname, so ``advertise.tldr.tech``
+    and ``www.tldr.tech`` share a key with ``tldr.tech``.  This is a deliberate
+    approximation: a multi-part public suffix such as ``co.uk`` will lump
+    unrelated sites together.  The consequence is a candidate ordered slightly
+    worse, never one dropped, so a real public-suffix list would buy nothing
+    worth its weight here.
+
+    Parameters
+    ----------
+    url : str
+        Absolute URL to key.
+
+    Returns
+    -------
+    str
+        Lowercased ``"second-level.tld"``, or ``""`` when the host is
+        unparseable.
+    """
+    try:
+        host = urlparse(url).netloc.lower().split(":")[0]
+    except ValueError:
+        return ""
+    labels = [label for label in host.split(".") if label]
+    return ".".join(labels[-2:]) if len(labels) >= 2 else host
+
+
+def collect_document_links(markdown: str, html: str, base_url: str | None = None) -> list[str]:
+    """
+    Collect a document's outbound links, article body first, whole page after.
+
+    Link following needs candidates, and the two available sources disagree
+    about what counts.  trafilatura's ``include_links=True`` markdown pass is
+    the *precise* one: it scopes links to the article body it detected, so
+    nav and footer junk never appears.  The raw anchor list is the *complete*
+    one: it sees every ``<a href>`` on the page, junk included.
+
+    Neither alone is enough.  On a page whose body detector under-selects (a
+    newsletter, an aggregator, a link roundup — precisely the pages worth
+    following links from), the markdown pass can return almost nothing while
+    the page carries a dozen real article links.  Observed on a TLDR AI issue:
+    69 KB of HTML, 25 distinct anchors, and a detected body of 2.3 KB holding
+    exactly one link, the sponsor ad.  No trafilatura setting recovers the
+    rest; ``favor_recall``, ``no_fallback`` and ``include_comments`` all
+    return the same fragment.
+
+    So this returns the union, ordered rather than filtered: body links first,
+    then bare URLs in the body text, then everything else on the page.  Order
+    is the whole mechanism.  Consumers take a bounded prefix of this list
+    (``link_follower`` caps candidates per hop), so on a page where body
+    detection works, the body links are consumed first and the page tail is
+    never reached.  On a page where it fails, the tail is what saves the run.
+    Junk is not this function's problem: :func:`is_followable_link` and the
+    LLM relevance judge are the two gates that follow.
+
+    Anchor hrefs are HTML-unescaped before deduplication, so a page emitting
+    ``&amp;`` in query strings does not yield the same URL twice.
+
+    Parameters
+    ----------
+    markdown : str
+        Output of trafilatura's ``include_links=True, output_format="markdown"``
+        pass, or ``""`` when that pass failed or returned nothing.
+    html : str
+        The raw HTML of the same document, scanned for anchors the body pass
+        did not surface.
+    base_url : str or None, optional
+        Document URL used to resolve relative hrefs.  When ``None`` (a local
+        file, where relative links cannot be resolved to anything fetchable)
+        only absolute http(s) anchors are kept.
+
+    Returns
+    -------
+    list[str]
+        Deduplicated absolute http(s) URLs, body links first, in first-seen
+        order.
+    """
+    links: list[str] = []
+    seen: set[str] = set()
+
+    def _add(href: str) -> None:
+        """Append *href* unless an equal string was already collected."""
+        if href not in seen:
+            seen.add(href)
+            links.append(href)
+
+    # 1. Markdown link targets: the highest-confidence signal, so they lead.
+    for match in _MD_LINK_RE.finditer(markdown):
+        _add(_unescape_fully(match.group(1)))
+    # 2. Bare URLs sitting in the body text rather than behind an anchor.
+    for href in extract_links_from_text(markdown):
+        _add(_unescape_fully(href))
+
+    # 3. The rest of the page's anchors, as the recall backstop, off-site
+    #    first.  Document order would be the obvious choice and is the wrong
+    #    one: site chrome sits at the top of the markup, so it would fill the
+    #    candidate budget before a single article link was reached.  On the
+    #    newsletter that motivated this, the first five anchors are the
+    #    masthead, the newsletter index, the ad-sales page and the blog.
+    #    A link leaving the document's own domain is far likelier to be
+    #    content, because linking outward is what these pages are for, so
+    #    off-site anchors are promoted ahead of same-site ones.  Both groups
+    #    are kept: this reorders the tail, it never drops from it.
+    base_site = _site_of(base_url) if base_url else ""
+    offsite: list[str] = []
+    onsite: list[str] = []
+    for match in _ANCHOR_HREF_RE.finditer(html):
+        href = _unescape_fully(match.group(1).strip())
+        if base_url:
+            href = urljoin(base_url, href)
+        if not href.lower().startswith(("http://", "https://")):
+            continue
+        if base_site and _site_of(href) == base_site:
+            onsite.append(href)
+        else:
+            offsite.append(href)
+    for href in (*offsite, *onsite):
+        _add(href)
+    return links
 
 
 def extract_links(sources: list[Source]) -> LinkReport:
