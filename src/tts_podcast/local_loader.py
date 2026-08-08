@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import trafilatura
 
+from tts_podcast.body_recovery import extract_body_text
 from tts_podcast.link_extractor import collect_document_links
 from tts_podcast.models import Source
 
@@ -57,7 +58,10 @@ def _read_html(path: Path) -> tuple[str, list[str]]:
     Read an HTML file and extract its main content and outbound links.
 
     Runs two trafilatura passes: a plain-text extraction for ``full_text``
-    (keeping it clean and link-free) and a markdown extraction with
+    (keeping it clean and link-free, and cross-checked against a baseline pass
+    by :func:`~tts_podcast.body_recovery.extract_body_text` so a file whose
+    body detector under-selects is recovered rather than truncated) and a
+    markdown extraction with
     ``include_links=True`` to capture hyperlinks scoped to the article body.
     :func:`~tts_podcast.link_extractor.collect_document_links` then orders
     those body links ahead of the document's remaining anchors, so a file
@@ -77,7 +81,7 @@ def _read_html(path: Path) -> tuple[str, list[str]]:
         deduplicated list of absolute http(s) URLs found in the article body.
     """
     raw = path.read_text(encoding="utf-8", errors="replace")
-    text = trafilatura.extract(raw) or ""
+    text = extract_body_text(raw, origin=str(path))
 
     # Capture outbound links via a second trafilatura pass with
     # include_links=True.  Plain-text extraction drops all hrefs, so the
