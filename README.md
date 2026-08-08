@@ -254,6 +254,45 @@ Run `tts-podcast run --help` for the full list.
 
 ---
 
+## 🔗 Following links
+
+`-L` / `--follow-links` treats your inputs as a starting point rather than the
+whole corpus: once they are scraped, it walks the hyperlinks inside them, keeps
+the pages that turn out to be on topic, and feeds those into both the research
+stage and the dialogue.
+
+```bash
+tts-podcast run -L https://blog.example.com/article
+tts-podcast run -L --follow-depth 2 --follow-max-links 8 https://blog.example.com/article
+```
+
+Selection happens twice, because guessing from a URL is cheap and guessing from
+the content is accurate:
+
+1. **Before fetching**, a URL heuristic drops the obvious noise (asset files,
+   anchors, trackers, social buttons, login and checkout paths) and keeps
+   anything that could be real content.
+2. **After fetching**, one Gemini call reads what each page actually says and
+   labels it `core`, `supporting`, or `irrelevant` against your topic. The
+   first two are kept, and their verdict follows them into the dialogue prompt,
+   the research prompt, and the report. The judge fails open: if the call
+   fails, pages are kept as `supporting` rather than silently dropped.
+
+Every hop costs one Gemini call on top of the fetches, so the traversal is
+capped on both axes:
+
+| Cap | Default | CLI | Config |
+|---|---|---|---|
+| Hops | 1 | `--follow-depth` | (none) |
+| Links per hop | 5 | `--follow-max-links-per-hop` | `follow.max_links_per_level` |
+| Links in total | 20 | `--follow-max-links` | `follow.max_links_total` |
+
+The total cap overrides depth × per-hop, so it is the single number to lower
+when a run feels expensive. A cap of zero is rejected up front instead of
+turning the whole stage into a silent no-op.
+
+---
+
 ## ⚙️ Configuration
 
 Scaffold a config file, then export your Gemini API key:
@@ -340,6 +379,11 @@ enabled, which adds search overhead to the standard input-token cost. The tool
 logs the cumulative cost after each round, so you can watch the bill while
 iterating.
 
+`--follow-links` bills on top of that: one relevance-judging call per hop, plus
+the pages it feeds into research and dialogue as extra input tokens. Keep
+`--follow-max-links` low on a first run and raise it once you know a source is
+worth mining.
+
 ---
 
 ## 🧪 Development
@@ -369,9 +413,13 @@ flowchart TB
     F --> LL[local_loader]
     S --> SY[synthetic source]
 
-    SC --> R{🧠 Research?<br/>--research N}
-    LL --> R
-    SY --> R
+    SC --> FL{🔗 Follow links?<br/>--follow-links}
+    LL --> FL
+    SY --> FL
+
+    FL -->|optional| FF[Fetch + relevance judge<br/>core · supporting · irrelevant]
+    FL --> R{🧠 Research?<br/>--research N}
+    FF --> R
 
     R -->|optional| RR[Google Search<br/>grounded rounds]
     R --> D[💬 llm_summarizer<br/>two-host dialogue]
