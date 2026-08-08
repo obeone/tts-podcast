@@ -31,6 +31,7 @@ with Gemini's multi-speaker TTS — plus an optional folder of Markdown reports.
 | 📑 | **Report folder** | Opt-in with `--report`: writes `overview.md`, `sources.md`, `script.md`, `research.md`, and `summary.md` next to the audio. |
 | 💸 | **Token & cost tracking** | Accumulates per-model token usage and estimates cost from configurable pricing. |
 | 🥷 | **Stealth fallback** | Optional CloakBrowser retry for pages that block plain scraping (Cloudflare, 403/429, JS-only). |
+| 🩹 | **Truncated-body recovery** | Detects pages where the article extractor keeps only one section (newsletters, roundups), recovers the rest, and says so in the logs. |
 
 ---
 
@@ -433,6 +434,31 @@ flowchart TB
 The pipeline is strictly linear: each stage hands typed data to the next, no
 hidden shared state. Scrape failures don't abort the run — it continues with
 whatever succeeded.
+
+### Truncated article bodies
+
+An article extractor has to decide which part of a page is the article. On a
+page assembled from several sibling sections (a newsletter, an aggregator, a
+link roundup) that decision can go badly wrong: one section is designated as
+the body and the others are dropped, with nothing in the result saying so. The
+episode then gets written from a fragment, sponsor copy and all.
+
+Every scrape (and every local HTML file) is therefore cross-checked against a
+second, structure-blind extraction pass. When that pass finds at least 1.5x
+more text, the page is treated as truncated: the fuller text is used and a
+warning naming both lengths is logged.
+
+```text
+WARNING Article body looks truncated for https://example.com/digest:
+        trafilatura kept 2324 chars, but a baseline pass over the same HTML
+        yields 4072 (1.8x more). Using the baseline text instead.
+```
+
+Pages that extract cleanly keep their exact body text: the second pass
+normally finds the same content or less, and the threshold sits above the
+range measured on healthy pages. Recovered text is cruder (block elements are
+separated less carefully and some page furniture survives), which is why it is
+used only when the alternative is losing most of the article.
 
 ---
 
