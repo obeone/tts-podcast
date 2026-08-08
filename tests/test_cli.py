@@ -481,3 +481,105 @@ class TestChunkBudgetResolvedBeforeBilling:
         assert captured["voice_direction"], (
             "Duo voice_direction had not been applied yet at resolution time."
         )
+
+
+class TestFollowCapFlags:
+    """`--follow-max-links[-per-hop]` override the config caps, and are validated."""
+
+    def _config_with_follow(self, tmp_path: Path, block: str) -> Path:
+        """Write the base config with an extra top-level ``follow:`` block appended."""
+        path = _write_config(tmp_path)
+        path.write_text(
+            path.read_text(encoding="utf-8") + textwrap.dedent(block),
+            encoding="utf-8",
+        )
+        return path
+
+    def _run(self, runner, config_path, extra_args):
+        """Invoke ``run`` with the follow stage mocked, returning (result, mock)."""
+        with patch("tts_podcast.cli.scrape_urls", return_value=[_fake_source()]), \
+             patch("tts_podcast.link_follower.follow_links", return_value=[]) as mock_follow, \
+             patch("tts_podcast.cli.generate_dialogue", return_value=[]), \
+             patch("tts_podcast.cli.generate_audio_chunks", return_value=[]):
+            result = runner.invoke(
+                cli,
+                [
+                    "run", "-c", str(config_path), "-A", "-n",
+                    *extra_args,
+                    "https://example.com/article",
+                ],
+            )
+        return result, mock_follow
+
+    def test_defaults_when_config_and_flags_are_silent(self, cli_env):
+        runner, config_path = cli_env
+        result, mock_follow = self._run(runner, config_path, ["-L"])
+        assert result.exit_code == 0, result.output
+        kwargs = mock_follow.call_args.kwargs
+        assert kwargs["max_links_per_level"] == 5
+        assert kwargs["max_links_total"] == 20
+
+    def test_config_values_are_used(self, cli_env, tmp_path):
+        runner, _ = cli_env
+        config_path = self._config_with_follow(tmp_path, """
+            follow:
+              max_links_per_level: 3
+              max_links_total: 7
+            """)
+        result, mock_follow = self._run(runner, config_path, ["-L"])
+        assert result.exit_code == 0, result.output
+        kwargs = mock_follow.call_args.kwargs
+        assert kwargs["max_links_per_level"] == 3
+        assert kwargs["max_links_total"] == 7
+
+    def test_flags_beat_config(self, cli_env, tmp_path):
+        runner, _ = cli_env
+        config_path = self._config_with_follow(tmp_path, """
+            follow:
+              max_links_per_level: 3
+              max_links_total: 7
+            """)
+        result, mock_follow = self._run(
+            runner,
+            config_path,
+            ["-L", "--follow-max-links", "8", "--follow-max-links-per-hop", "4"],
+        )
+        assert result.exit_code == 0, result.output
+        kwargs = mock_follow.call_args.kwargs
+        assert kwargs["max_links_per_level"] == 4
+        assert kwargs["max_links_total"] == 8
+
+    @pytest.mark.parametrize("flag", ["--follow-max-links", "--follow-max-links-per-hop"])
+    def test_non_positive_flag_exits_1(self, cli_env, flag):
+        runner, config_path = cli_env
+        result, mock_follow = self._run(runner, config_path, ["-L", flag, "0"])
+        assert result.exit_code == 1
+        assert flag in result.output
+        assert not mock_follow.called, "an invalid cap must abort before any fetching"
+
+    @pytest.mark.parametrize(
+        ("key", "value"),
+        [
+            ("max_links_total", "0"),
+            ("max_links_per_level", "-1"),
+            ("max_links_total", "'a handful'"),
+        ],
+    )
+    def test_invalid_config_value_exits_1(self, cli_env, tmp_path, key, value):
+        runner, _ = cli_env
+        config_path = self._config_with_follow(tmp_path, f"""
+            follow:
+              {key}: {value}
+            """)
+        result, mock_follow = self._run(runner, config_path, ["-L"])
+        assert result.exit_code == 1
+        # The message must name the config key, not the CLI flag: the user has
+        # nothing to fix on the command line here.
+        assert f"follow.{key}" in result.output
+        assert not mock_follow.called
+
+    def test_caps_without_follow_links_do_nothing(self, cli_env):
+        runner, config_path = cli_env
+        result, mock_follow = self._run(runner, config_path, ["--follow-max-links", "8"])
+        assert result.exit_code == 0, result.output
+        assert not mock_follow.called, "the follow stage must stay off without -L"
