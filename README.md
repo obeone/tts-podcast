@@ -396,7 +396,7 @@ uv run ruff check src/ tests/    # lint
 ```
 
 Tests mock the Gemini SDK rather than hitting the network. See
-[`CLAUDE.md`](CLAUDE.md) for the architecture deep-dive and key invariants.
+[`AGENTS.md`](AGENTS.md) for the architecture deep-dive and key invariants.
 
 ---
 
