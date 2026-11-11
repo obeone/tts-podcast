@@ -1,13 +1,30 @@
-name: Publish to PyPI
+name: Release
 
-# Publishes to PyPI on every published GitHub Release, using PyPI Trusted
-# Publishing (OIDC) — no API token stored in the repo. One-time setup:
+# Pushing a `v*` tag releases that version: build, publish to PyPI, then
+# create the GitHub Release with generated notes and the built files.
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# PyPI goes first on purpose: a GitHub Release is only created for a version
+# that really is installable.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC), so no API token is stored in
+# the repo. The trusted publisher is bound to this file name and to the `pypi`
+# environment, so renaming either one breaks publishing until PyPI is updated:
 # https://pypi.org/manage/project/tts-podcast/settings/publishing/
 #   Owner: obeone · Repo: tts-podcast · Workflow: publish.yml · Environment: pypi
+#
+# Everything lives in this one workflow because a Release created with the
+# default GITHUB_TOKEN does not trigger other workflows: a separate
+# "on: release" publish job would never run.
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -15,6 +32,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check the tag matches the package version
+        # A tag that disagrees with pyproject.toml would publish one version
+        # under another version's name. PyPI uploads cannot be replaced, so
+        # stop before building anything.
+        run: |
+          version="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match pyproject.toml version ${version} (expected v${version})."
+            exit 1
+          fi
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -48,3 +76,26 @@ jobs:
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  release:
+    name: Create GitHub Release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create the release
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "${GITHUB_REF_NAME}" dist/*
+          --repo "${GITHUB_REPOSITORY}"
+          --title "${GITHUB_REF_NAME}"
+          --generate-notes
+          --verify-tag
