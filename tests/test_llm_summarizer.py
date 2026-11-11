@@ -18,6 +18,9 @@ import pytest
 from tts_podcast.duos import BUILTIN_DUOS
 from tts_podcast.llm_summarizer import (
     _MAX_CHUNK_BYTES,
+    _MIN_CHUNK_BYTES,
+    _VERBATIM_GUIDANCE,
+    _VOCAL_TAGS_GUIDANCE,
     DialogueChunk,
     _audio_tags_enabled,
     _build_prompt,
@@ -1116,3 +1119,146 @@ class TestOversizedSpeakerTurn:
                 SHORT_DIALOGUE, "Alex", "Jordan", max_bytes=_MAX_CHUNK_BYTES
             )
         assert warn.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Gemini 3.8+ verbatim-transcript prompt
+# ---------------------------------------------------------------------------
+
+_PROMPT_KW = {
+    "articles": SAMPLE_ARTICLES,
+    "speaker1_name": "Alex",
+    "speaker2_name": "Jordan",
+}
+_LEGACY_PAREN_RULE = "EVERY speaker turn MUST start with an inline emotional cue"
+
+
+def _example_dialogue_lines(prompt: str) -> list[str]:
+    """
+    Extract the speaker-prefixed lines of the prompt's example dialogue.
+
+    Parameters
+    ----------
+    prompt : str
+        A prompt built by ``_build_prompt``.
+
+    Returns
+    -------
+    list[str]
+        Lines starting with ``Alex:`` or ``Jordan:``.
+    """
+    return [
+        line for line in prompt.splitlines() if line.startswith(("Alex:", "Jordan:"))
+    ]
+
+
+class TestVerbatimPrompt:
+    """``verbatim_transcript`` swaps the delivery-cue guidance in the prompt."""
+
+    def test_verbatim_with_audio_tags_uses_angle_bracket_guidance(self):
+        """Vocal tags are allowed, legacy cue rules are gone."""
+        prompt = _build_prompt(**_PROMPT_KW, audio_tags=True, verbatim_transcript=True)
+
+        assert _VOCAL_TAGS_GUIDANCE in prompt
+        assert "<laugh>" in prompt and "<short pause>" in prompt
+        assert _VERBATIM_GUIDANCE in prompt
+        assert "no parentheses" in prompt and "no square brackets" in prompt
+        assert "[enthusiasm]" not in prompt
+        assert _LEGACY_PAREN_RULE not in prompt
+
+    def test_verbatim_without_audio_tags_forbids_all_cues(self):
+        """No-cue rule stays, vocal-tag guidance and example tags are absent."""
+        prompt = _build_prompt(**_PROMPT_KW, audio_tags=False, verbatim_transcript=True)
+
+        assert _VERBATIM_GUIDANCE in prompt
+        assert _VOCAL_TAGS_GUIDANCE not in prompt
+        assert "<short pause>" not in prompt
+        assert _LEGACY_PAREN_RULE not in prompt
+        example = _example_dialogue_lines(prompt)
+        assert example
+        assert not any("<" in line and ">" in line for line in example)
+
+    @pytest.mark.parametrize("audio_tags", [True, False])
+    def test_verbatim_false_is_byte_identical_to_default(self, audio_tags):
+        """Passing ``verbatim_transcript=False`` changes nothing."""
+        explicit = _build_prompt(
+            **_PROMPT_KW, audio_tags=audio_tags, verbatim_transcript=False
+        )
+        default = _build_prompt(**_PROMPT_KW, audio_tags=audio_tags)
+        assert explicit == default
+
+
+class TestGenerateDialogueVerbatimRouting:
+    """``generate_dialogue`` enables verbatim mode from the TTS model only."""
+
+    def test_38_model_prompt_uses_verbatim_guidance(self):
+        """A Gemini 3.8 TTS config yields the verbatim prompt."""
+        cfg = {**GEMINI_CFG, "tts_model": "gemini-3.8-flash-tts"}
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
+
+        prompt = _captured_prompt(mock_genai)
+        assert _VERBATIM_GUIDANCE in prompt
+        assert _LEGACY_PAREN_RULE not in prompt
+
+    def test_legacy_model_prompt_keeps_legacy_guidance(self):
+        """A Gemini 3.1 TTS config keeps the bracketed audio-tag prompt."""
+        cfg = {**GEMINI_CFG, "tts_model": "gemini-3.1-flash-tts-preview"}
+        mock_genai = _mock_genai_response(SHORT_DIALOGUE)
+        with patch("tts_podcast.llm_summarizer.genai", mock_genai):
+            generate_dialogue(SAMPLE_ARTICLES, cfg, "Alex", "Jordan")
+
+        prompt = _captured_prompt(mock_genai)
+        assert _VERBATIM_GUIDANCE not in prompt
+        assert "[enthusiasm]" in prompt
+
+
+class TestResolveChunkBudgetVerbatim:
+    """Speech-metadata models send no preamble, so the budget is never clamped."""
+
+    _HUGE = "x" * 3000
+
+    def _cfg(self, model: str) -> dict:
+        """
+        Build a config whose preamble would overflow any legacy request.
+
+        Parameters
+        ----------
+        model : str
+            Value for ``tts_model``.
+
+        Returns
+        -------
+        dict
+            A Gemini config with a huge scene and voice directions.
+        """
+        return {
+            "tts_model": model,
+            "language": "French",
+            "speaker1": {
+                "name": "Alex",
+                "voice": "Puck",
+                "voice_direction": self._HUGE,
+            },
+            "speaker2": {
+                "name": "Jordan",
+                "voice": "Charon",
+                "voice_direction": self._HUGE,
+            },
+            "tts_style": {"scene": self._HUGE},
+        }
+
+    def test_38_model_gets_full_budget_without_warning(self, caplog):
+        """The oversized config still resolves to the maximum, silently."""
+        with caplog.at_level(logging.WARNING, logger="tts_podcast.llm_summarizer"):
+            budget = _resolve_chunk_budget(self._cfg("gemini-3.8-flash-tts"))
+        assert budget == _MAX_CHUNK_BYTES
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_legacy_model_with_same_config_clamps_and_warns(self, caplog):
+        """The same config on Gemini 3.1 is clamped to the minimum with a warning."""
+        with caplog.at_level(logging.WARNING, logger="tts_podcast.llm_summarizer"):
+            budget = _resolve_chunk_budget(self._cfg("gemini-3.1-flash-tts-preview"))
+        assert budget == _MIN_CHUNK_BYTES
+        assert any(r.levelno >= logging.WARNING for r in caplog.records)

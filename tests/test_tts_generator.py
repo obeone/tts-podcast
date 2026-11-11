@@ -13,10 +13,13 @@ both invariants, the byte-identical rendering for configs that declare no
 
 from __future__ import annotations
 
+import io
 import logging
+import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
+from google.genai import types
 
 from tts_podcast.duos import BUILTIN_DUOS
 from tts_podcast.llm_summarizer import (
@@ -29,7 +32,11 @@ from tts_podcast.llm_summarizer import (
 )
 from tts_podcast.tts_generator import (
     _DEFAULT_TTS_TEMPERATURE,
+    _build_tts_parts,
     _build_tts_prompt,
+    _speaker_style,
+    _split_turns,
+    _to_pcm,
     generate_audio_chunks,
 )
 
@@ -665,3 +672,218 @@ class TestTtsTemperature:
 
         config = client.models.generate_content.call_args.kwargs["config"]
         assert config.temperature == 0.35
+
+
+# ---------------------------------------------------------------------------
+# Gemini 3.8+ speech-metadata schema
+# ---------------------------------------------------------------------------
+
+_NAMES = ("Alex", "Jordan")
+_CFG_38 = {
+    **_BASE_CFG,
+    "api_key": "test-key",
+    "tts_model": "gemini-3.8-flash-tts",
+}
+
+
+def _wav_bytes(frames: bytes, rate: int = 24000, channels: int = 1) -> bytes:
+    """
+    Build an in-memory 16-bit WAV file.
+
+    Parameters
+    ----------
+    frames : bytes
+        Raw PCM frames to wrap.
+    rate : int, optional
+        Sample rate in Hz.
+    channels : int, optional
+        Number of channels.
+
+    Returns
+    -------
+    bytes
+        A complete WAV file.
+    """
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(frames)
+    return buf.getvalue()
+
+
+class TestSplitTurns:
+    """``_split_turns`` turns a ``Name: line`` chunk into ordered tuples."""
+
+    def test_strips_prefix_and_keeps_order(self):
+        """Prefixes are removed and turns keep their dialogue order."""
+        text = "Alex: Hello there.\nJordan: Hi!\nAlex: Ready?"
+        assert _split_turns(text, _NAMES) == [
+            ("Alex", "Hello there."),
+            ("Jordan", "Hi!"),
+            ("Alex", "Ready?"),
+        ]
+
+    def test_continuation_line_joins_previous_turn(self):
+        """A line without a prefix continues the turn before it."""
+        text = "Alex: First part.\nsecond part.\nJordan: Reply."
+        assert _split_turns(text, _NAMES) == [
+            ("Alex", "First part. second part."),
+            ("Jordan", "Reply."),
+        ]
+
+    def test_leading_unprefixed_line_goes_to_first_speaker_with_warning(self, caplog):
+        """An orphan opening line is voiced by speaker one and logged."""
+        with caplog.at_level(logging.WARNING, logger="tts_podcast.tts_generator"):
+            turns = _split_turns("Orphan line.\nJordan: Hi.", _NAMES)
+        assert turns == [("Alex", "Orphan line."), ("Jordan", "Hi.")]
+        assert any("without a speaker prefix" in r.getMessage() for r in caplog.records)
+
+    def test_blank_lines_and_empty_turns_are_dropped(self):
+        """Blank lines vanish and a turn with no text is not emitted."""
+        text = "Alex: One.\n\n   \nJordan:\nAlex:   \nJordan: Two."
+        assert _split_turns(text, _NAMES) == [("Alex", "One."), ("Jordan", "Two.")]
+
+
+class TestSpeakerStyle:
+    """``_speaker_style`` builds the per-turn style from delivery traits only."""
+
+    def test_voice_direction_alone(self):
+        """Without a pace the style is the bare voice direction."""
+        speaker = {"name": "Alex", "voice_direction": "  warm, low register "}
+        assert _speaker_style(speaker, {}) == "warm, low register"
+
+    def test_pace_is_appended_to_voice_direction(self):
+        """A configured pace follows the direction as ``Pace: ...``."""
+        speaker = {"name": "Alex", "voice_direction": "warm"}
+        cfg = {"tts_style": {"pace": "slow"}}
+        assert _speaker_style(speaker, cfg) == "warm Pace: slow"
+
+    def test_pace_alone_works(self):
+        """A pace with no voice direction still yields a style."""
+        assert _speaker_style({"name": "Alex"}, {"tts_style": {"pace": "brisk"}}) == (
+            "Pace: brisk"
+        )
+
+    @pytest.mark.parametrize("direction", [None, "", "   "])
+    def test_none_when_nothing_is_set(self, direction):
+        """No usable direction and no pace means no style at all."""
+        speaker = {"name": "Alex", "voice_direction": direction}
+        assert _speaker_style(speaker, {"tts_style": {}}) is None
+
+    def test_never_leaks_personality_overlay_or_scene(self):
+        """Persona, overlay and scene prose stay out of the turn style."""
+        speaker = {
+            "name": "Alex",
+            "voice_direction": "steady",
+            "personality": "PERSONA-MARKER",
+            "style_overlay": "OVERLAY-MARKER",
+        }
+        cfg = {"tts_style": {"scene": "SCENE-MARKER", "pace": "calm"}}
+        style = _speaker_style(speaker, cfg)
+        assert style is not None
+        for marker in ("PERSONA-MARKER", "OVERLAY-MARKER", "SCENE-MARKER"):
+            assert marker not in style
+
+
+class TestBuildTtsParts:
+    """``_build_tts_parts`` emits one structured part per speaker turn."""
+
+    def test_one_part_per_turn_with_metadata_and_clean_text(self):
+        """Each part carries speaker and style, and the text is a bare transcript."""
+        cfg = {
+            **_BASE_CFG,
+            "speaker1": {**_BASE_CFG["speaker1"], "voice_direction": "warm"},
+            "speaker2": {**_BASE_CFG["speaker2"], "voice_direction": "dry"},
+        }
+        parts = _build_tts_parts("Alex: Hello.\nJordan: Hi.\nAlex: Bye.", cfg)
+
+        assert len(parts) == 3
+        assert all(isinstance(p, types.Part) for p in parts)
+        assert [p.speech_metadata.speaker for p in parts] == ["Alex", "Jordan", "Alex"]
+        assert [p.speech_metadata.style for p in parts] == ["warm", "dry", "warm"]
+        assert [p.text for p in parts] == ["Hello.", "Hi.", "Bye."]
+        for part in parts:
+            assert "Alex:" not in part.text and "Jordan:" not in part.text
+            assert "Audio profile" not in part.text
+            assert "Director's notes" not in part.text
+
+
+class TestToPcm:
+    """``_to_pcm`` unwraps WAV payloads and passes raw PCM through."""
+
+    def test_raw_pcm_is_returned_unchanged(self):
+        """Bytes without a RIFF header are already PCM."""
+        raw = b"\x01\x02" * 50
+        assert _to_pcm(raw, 0) == raw
+
+    def test_24k_mono_16bit_wav_is_unwrapped_to_frames(self):
+        """A WAV in the expected format yields exactly its frames."""
+        frames = b"\x10\x00\x20\x00" * 100
+        assert _to_pcm(_wav_bytes(frames), 0) == frames
+
+    @pytest.mark.parametrize(("rate", "channels"), [(16000, 1), (24000, 2)])
+    def test_other_wav_format_raises_naming_chunk(self, rate, channels):
+        """A WAV in another sample format is rejected with the chunk index."""
+        data = _wav_bytes(b"\x00\x00" * 64, rate=rate, channels=channels)
+        with pytest.raises(RuntimeError, match="chunk 7"):
+            _to_pcm(data, 7)
+
+
+class TestGenerateAudioChunksSchemas:
+    """``generate_audio_chunks`` picks the request schema from ``tts_model``."""
+
+    def test_38_model_sends_structured_parts(self):
+        """Gemini 3.8 gets a list of Parts with speech_metadata, not a string."""
+        with patch("tts_podcast.tts_generator.genai.Client") as client_cls:
+            client = client_cls.return_value
+            client.models.generate_content.return_value = _fake_tts_response()
+            generate_audio_chunks(
+                [DialogueChunk(text="Alex: Hi.\nJordan: Hello.", index=0)], _CFG_38
+            )
+
+        kwargs = client.models.generate_content.call_args.kwargs
+        contents = kwargs["contents"]
+        assert isinstance(contents, list)
+        assert all(isinstance(p, types.Part) for p in contents)
+        assert [p.speech_metadata.speaker for p in contents] == ["Alex", "Jordan"]
+        voices = kwargs["config"].speech_config.multi_speaker_voice_config
+        assert [v.speaker for v in voices.speaker_voice_configs] == ["Alex", "Jordan"]
+
+    def test_legacy_model_still_sends_preamble_string(self):
+        """Gemini 3.1 keeps the single text prompt starting with the preamble."""
+        cfg = {**_CFG_38, "tts_model": "gemini-3.1-flash-tts-preview"}
+        with patch("tts_podcast.tts_generator.genai.Client") as client_cls:
+            client = client_cls.return_value
+            client.models.generate_content.return_value = _fake_tts_response()
+            generate_audio_chunks([DialogueChunk(text="Alex: Hi.", index=0)], cfg)
+
+        contents = client.models.generate_content.call_args.kwargs["contents"]
+        assert isinstance(contents, str)
+        assert contents.startswith("Audio profile:")
+
+    def test_wav_response_is_returned_as_bare_pcm(self):
+        """A WAV payload from the model is unwrapped before being returned."""
+        frames = b"\x05\x00" * 200
+        with patch("tts_podcast.tts_generator.genai.Client") as client_cls:
+            client = client_cls.return_value
+            client.models.generate_content.return_value = _fake_tts_response(
+                _wav_bytes(frames)
+            )
+            result = generate_audio_chunks(
+                [DialogueChunk(text="Alex: Hi.", index=0)], _CFG_38
+            )
+
+        assert result == [frames]
+
+    def test_38_chunk_without_speaker_turn_raises(self):
+        """A chunk that yields no turn cannot be synthesised and must fail."""
+        with patch("tts_podcast.tts_generator.genai.Client") as client_cls:
+            client = client_cls.return_value
+            client.models.generate_content.return_value = _fake_tts_response()
+            with pytest.raises(RuntimeError, match="no speaker turn"):
+                generate_audio_chunks(
+                    [DialogueChunk(text="   \n  ", index=0)], _CFG_38
+                )
+        client.models.generate_content.assert_not_called()

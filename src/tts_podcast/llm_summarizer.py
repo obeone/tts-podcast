@@ -22,6 +22,7 @@ from google.genai import types
 from tts_podcast.link_extractor import relevance_label
 from tts_podcast.retry import gemini_retry
 from tts_podcast.style_presets import truncate_with_warning, validate_preset
+from tts_podcast.tts_models import uses_speech_metadata
 
 if TYPE_CHECKING:
     from rich.progress import Progress
@@ -111,6 +112,47 @@ the turn.
 "(après une courte pause)"). Vary them naturally according to the content and \
 pace of the discussion."""
 
+# Gemini 3.8+ TTS reads the dialogue as a verbatim transcript: a cue written in
+# the text is spoken, not performed.  Sustained delivery travels out of band
+# (tts_generator sends it as speech_metadata.style), so the writer is told to
+# keep the text clean and carry emotion in the wording itself.
+_VERBATIM_GUIDANCE = """\
+- Every character of a turn is read aloud verbatim by the speech model. Never \
+write stage directions, emotional cues or delivery notes: no parentheses such \
+as "(avec enthousiasme)", no square brackets such as "[curiosity]". Carry the \
+emotion through word choice, punctuation and sentence rhythm instead.
+- Write real spoken language: the natural hesitations, filler words and short \
+reactions of the target language are welcome where they fit the host, and an \
+ellipsis ("...") marks a trailing thought."""
+
+_VOCAL_TAGS_GUIDANCE = """\
+- The only markup allowed is an inline vocal tag in angle brackets, placed at \
+the exact point where the sound or silence happens. Use only these tags, \
+spelled exactly like this: <laugh>, <chuckle>, <sigh>, <gasp>, <breath>, \
+<short pause>, <long pause>.
+- A vocal tag marks a momentary sound or silence, never a mood or a tone: \
+"<curious>" or "<enthusiastic>" are invalid.
+- Vocal tags MUST stay in English, even when the surrounding dialogue is in \
+another language.
+- Use them sparingly: most turns need none, and never place two tags back to \
+back."""
+
+_EXAMPLE_VOCAL_TAGS = """\
+{speaker1}: {speaker2}, on a une annonce de Google cette semaine sur leur API.
+{speaker2}: Ah ? <short pause> Qu'est-ce qu'ils publient ?
+{speaker1}: Une réduction de latence de cinquante pour cent sur les requêtes longues... c'est pas rien !
+{speaker2}: D'accord. Ils expliquent comment ils y arrivent, ou c'est un chiffre marketing ?
+{speaker1}: Ils parlent d'un nouveau routage côté inférence. Le détail technique reste vague.
+{speaker2}: <chuckle> Mouais. On verra à l'usage."""
+
+_EXAMPLE_VERBATIM = """\
+{speaker1}: {speaker2}, on a une annonce de Google cette semaine sur leur API.
+{speaker2}: Ah ? Qu'est-ce qu'ils publient ?
+{speaker1}: Une réduction de latence de cinquante pour cent sur les requêtes longues... c'est pas rien !
+{speaker2}: D'accord. Ils expliquent comment ils y arrivent, ou c'est un chiffre marketing ?
+{speaker1}: Ils parlent d'un nouveau routage côté inférence. Le détail technique reste vague.
+{speaker2}: Mouais. On verra à l'usage."""
+
 _EXAMPLE_AUDIO_TAGS = """\
 {speaker1}: [neutral] {speaker2}, on a une annonce de Google cette semaine sur leur API.
 {speaker2}: [curiosity] Ah ? [short pause] Qu'est-ce qu'ils publient ?
@@ -194,6 +236,11 @@ def _audio_tags_enabled(gemini_cfg: dict) -> bool:
     - Set to ``"auto"``, missing, or any other value → enabled iff the
       configured ``tts_model`` name starts with ``"gemini-3"`` (Gemini 3.x
       Flash TTS introduced bracketed audio-tag support).
+
+    Which *kind* of tag is requested is decided separately: bracketed tags
+    (``[curiosity]``) for Gemini 3.1, angle-bracket vocal tags (``<laugh>``)
+    for the verbatim-transcript models from Gemini 3.8 on.  See the
+    ``verbatim_transcript`` argument of :func:`_build_prompt`.
 
     Parameters
     ----------
@@ -471,6 +518,7 @@ def _build_prompt(
     speaker1_overlay: str | None = None,
     speaker2_overlay: str | None = None,
     angle: str | None = None,
+    verbatim_transcript: bool = False,
 ) -> str:
     """
     Build the full LLM prompt from the article list, speaker names, and personalities.
@@ -524,6 +572,13 @@ def _build_prompt(
     angle : str or None, keyword-only, optional
         Free-text episode angle.  Truncated to 500 chars.  Renders as a
         ``- Episode angle: …`` bullet inside ``Instructions:``.
+    verbatim_transcript : bool, keyword-only, optional
+        Set for TTS models that read the dialogue as a verbatim transcript
+        (Gemini 3.8 and later, see
+        :func:`tts_podcast.tts_models.uses_speech_metadata`).  The LLM is then
+        told to write no cue at all in parentheses or square brackets, and
+        *audio_tags* switches to deciding whether inline angle-bracket vocal
+        tags (``<laugh>``, ``<short pause>``) are allowed.
 
     Returns
     -------
@@ -552,10 +607,18 @@ def _build_prompt(
 
     articles_text = "\n\n".join(article_blocks)
 
-    delivery_cues_guidance = (
-        _AUDIO_TAGS_GUIDANCE if audio_tags else _PAREN_CUES_GUIDANCE
-    )
-    example_template = _EXAMPLE_AUDIO_TAGS if audio_tags else _EXAMPLE_PAREN_CUES
+    if verbatim_transcript:
+        # The no-cue rule holds whatever audio_tags says: on this schema a
+        # parenthetical cue is not a weaker alternative, it is spoken aloud.
+        delivery_cues_guidance = _VERBATIM_GUIDANCE
+        if audio_tags:
+            delivery_cues_guidance += "\n" + _VOCAL_TAGS_GUIDANCE
+        example_template = _EXAMPLE_VOCAL_TAGS if audio_tags else _EXAMPLE_VERBATIM
+    else:
+        delivery_cues_guidance = (
+            _AUDIO_TAGS_GUIDANCE if audio_tags else _PAREN_CUES_GUIDANCE
+        )
+        example_template = _EXAMPLE_AUDIO_TAGS if audio_tags else _EXAMPLE_PAREN_CUES
     example_dialogue = example_template.format(
         speaker1=speaker1_name, speaker2=speaker2_name
     )
@@ -658,7 +721,16 @@ def _resolve_chunk_budget(gemini_cfg: dict) -> int:
     :mod:`tts_podcast.cli` calls this as soon as the duo is resolved, before the
     research and dialogue stages run.  That is what makes the warning arrive
     before the user is billed rather than alongside the request it condemns.
+
+    Models on the speech-metadata schema (Gemini 3.8 and later) send no
+    preamble at all, so there is nothing to measure and they always get the
+    full ``_MAX_CHUNK_BYTES``.  The per-turn ``style`` strings do add to the
+    request, but against an 8,192-token input limit a 3000-byte chunk leaves
+    several times the room they need.
     """
+    if uses_speech_metadata(gemini_cfg.get("tts_model")):
+        return _MAX_CHUNK_BYTES
+
     # Imported here, not at module scope, for two reasons: tts_generator
     # imports this module only under TYPE_CHECKING, so a runtime import in this
     # direction is safe today but stays local so it cannot become an import
@@ -929,7 +1001,14 @@ def generate_dialogue(
     )
 
     audio_tags = _audio_tags_enabled(gemini_cfg)
-    if audio_tags:
+    verbatim_transcript = uses_speech_metadata(gemini_cfg.get("tts_model"))
+    if verbatim_transcript:
+        logger.info(
+            "Verbatim-transcript dialogue prompt (tts_model=%s, vocal tags %s).",
+            gemini_cfg.get("tts_model"),
+            "on" if audio_tags else "off",
+        )
+    elif audio_tags:
         logger.info("Audio tags enabled for dialogue prompt (tts_model=%s).", gemini_cfg.get("tts_model"))
 
     prompt = _build_prompt(
@@ -950,6 +1029,7 @@ def generate_dialogue(
         speaker1_overlay=speaker1_overlay,
         speaker2_overlay=speaker2_overlay,
         angle=angle,
+        verbatim_transcript=verbatim_transcript,
     )
 
     logger.info(
