@@ -91,7 +91,7 @@ def load_config(path: str | Path) -> dict[str, Any]:
     --------
     >>> cfg = load_config("config.yaml")
     >>> cfg["gemini"]["text_model"]
-    'gemini-2.0-flash'
+    'gemini-3.8-flash'
     """
     config_path = Path(path)
     if not config_path.exists():

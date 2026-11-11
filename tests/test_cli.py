@@ -583,3 +583,84 @@ class TestFollowCapFlags:
         result, mock_follow = self._run(runner, config_path, ["--follow-max-links", "8"])
         assert result.exit_code == 0, result.output
         assert not mock_follow.called, "the follow stage must stay off without -L"
+
+
+# ---------------------------------------------------------------------------
+# `config init` defaults
+# ---------------------------------------------------------------------------
+
+
+class TestConfigInitDefaults:
+    """The wizard's defaults when the user accepts every prompt."""
+
+    @staticmethod
+    def _run_init(tmp_path: Path, existing: str | None = None) -> dict:
+        """
+        Run ``config init`` accepting every default and return the written YAML.
+
+        Parameters
+        ----------
+        tmp_path : Path
+            Directory holding the existing and the written config.
+        existing : str or None, optional
+            YAML content of a pre-existing config, or ``None`` for a first run.
+
+        Returns
+        -------
+        dict
+            The parsed configuration the wizard wrote.
+        """
+        import yaml
+
+        current = tmp_path / "current.yaml"
+        if existing is not None:
+            current.write_text(textwrap.dedent(existing), encoding="utf-8")
+        written = tmp_path / "written.yaml"
+        with patch("tts_podcast.cli._DEFAULT_CONFIG", current):
+            result = CliRunner().invoke(
+                cli, ["config", "init", "--output", str(written)], input="\n" * 60
+            )
+        assert result.exit_code == 0, result.output
+        return yaml.safe_load(written.read_text(encoding="utf-8"))
+
+    def test_first_run_selects_current_models(self, tmp_path):
+        """A fresh config gets the Gemini 3.8 text and TTS models."""
+        cfg = self._run_init(tmp_path)
+        assert cfg["gemini"]["text_model"] == "gemini-3.8-flash"
+        assert cfg["gemini"]["tts_model"] == "gemini-3.8-flash-tts"
+
+    def test_first_run_prices_the_default_models(self, tmp_path):
+        """The default models must have a rate, or their cost reads as zero."""
+        cfg = self._run_init(tmp_path)
+        assert cfg["pricing"]["gemini-3.8-flash"]["standard"]["input_per_1m"] > 0
+        assert cfg["pricing"]["gemini-3.8-flash-tts"]["output_per_1m"] > 0
+
+    def test_rerun_keeps_the_models_already_configured(self, tmp_path):
+        """Existing model choices are offered back as defaults, not replaced."""
+        cfg = self._run_init(
+            tmp_path,
+            """\
+            gemini:
+              text_model: gemini-2.5-flash
+              tts_model: gemini-2.5-flash-preview-tts
+            """,
+        )
+        assert cfg["gemini"]["text_model"] == "gemini-2.5-flash"
+        assert cfg["gemini"]["tts_model"] == "gemini-2.5-flash-preview-tts"
+
+    def test_rerun_adds_new_models_without_touching_user_rates(self, tmp_path):
+        """Pricing is merged per model: new entries appear, edited ones stay."""
+        cfg = self._run_init(
+            tmp_path,
+            """\
+            pricing:
+              gemini-2.5-flash-preview-tts:
+                input_per_1m: 123.0
+                output_per_1m: 456.0
+            """,
+        )
+        assert cfg["pricing"]["gemini-2.5-flash-preview-tts"] == {
+            "input_per_1m": 123.0,
+            "output_per_1m": 456.0,
+        }
+        assert "gemini-3.8-flash-tts" in cfg["pricing"]

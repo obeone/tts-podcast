@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Default model when neither follow.model nor gemini.text_model is configured.
-_DEFAULT_FOLLOW_MODEL_FALLBACK = "gemini-2.5-flash"
+_DEFAULT_FOLLOW_MODEL_FALLBACK = "gemini-3.8-flash"
 
 # How many characters of each fetched body are shown to the relevance judge.
 # Enough to characterise the content without bloating the prompt.
