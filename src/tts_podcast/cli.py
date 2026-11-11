@@ -1178,7 +1178,7 @@ def config_init(output_path: str) -> None:
         _get("gemini", "api_key_env", "GEMINI_API_KEY"),
     )
     gemini_text_model = _prompt("Text model",  _get("gemini", "text_model", "gemini-3.5-flash"))
-    gemini_tts_model  = _prompt("TTS model",   _get("gemini", "tts_model", "gemini-3.1-flash-tts-preview"))
+    gemini_tts_model  = _prompt("TTS model",   _get("gemini", "tts_model", "gemini-3.8-flash-tts"))
     gemini_language   = _prompt("Podcast language", _get("gemini", "language", "French"))
     gemini_tier       = _prompt(
         "Service tier (standard/flex/priority, leave empty for default)",
