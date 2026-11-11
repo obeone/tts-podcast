@@ -1177,7 +1177,7 @@ def config_init(output_path: str) -> None:
         "Env var for Gemini API key",
         _get("gemini", "api_key_env", "GEMINI_API_KEY"),
     )
-    gemini_text_model = _prompt("Text model",  _get("gemini", "text_model", "gemini-3.5-flash"))
+    gemini_text_model = _prompt("Text model",  _get("gemini", "text_model", "gemini-3.8-flash"))
     gemini_tts_model  = _prompt("TTS model",   _get("gemini", "tts_model", "gemini-3.8-flash-tts"))
     gemini_language   = _prompt("Podcast language", _get("gemini", "language", "French"))
     gemini_tier       = _prompt(
@@ -1333,11 +1333,15 @@ def config_init(output_path: str) -> None:
     if style_block:
         cfg["gemini"]["style"] = style_block
 
-    if not cfg["pricing"]:
-        example = Path(__file__).parent.parent.parent / "config.example.yaml"
-        if example.exists():
-            example_raw = yaml.safe_load(example.read_text(encoding="utf-8"))
-            cfg["pricing"] = example_raw.get("pricing", {})
+    # Seed pricing from the bundled example, then let the user's own entries
+    # win.  Merging per model rather than only filling an empty section is what
+    # lets a re-run pick up models added since the config was first written
+    # (a new TTS model would otherwise be costed at zero) without ever
+    # overwriting a rate the user set by hand.
+    example = Path(__file__).parent.parent.parent / "config.example.yaml"
+    if example.exists():
+        example_raw = yaml.safe_load(example.read_text(encoding="utf-8")) or {}
+        cfg["pricing"] = {**(example_raw.get("pricing") or {}), **cfg["pricing"]}
 
     dest = Path(output_path)
     dest.parent.mkdir(parents=True, exist_ok=True)

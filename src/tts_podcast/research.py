@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Default model when gemini_cfg lacks a dedicated research.model key.
-_DEFAULT_RESEARCH_MODEL_FALLBACK = "gemini-2.5-flash"
+_DEFAULT_RESEARCH_MODEL_FALLBACK = "gemini-3.8-flash"
 
 
 _ROUND_1_PROMPT = """\
@@ -393,7 +393,7 @@ def conduct_research(
     gemini_cfg : dict
         Resolved Gemini configuration.  Uses ``api_key``, ``language``
         (default ``"French"``), and ``research.model`` if present
-        (falls back to ``text_model``, then to ``"gemini-2.5-flash"``).
+        (falls back to ``text_model``, then to ``"gemini-3.8-flash"``).
     token_tracker : TokenTracker or None, optional
         When provided, records token usage for every research call.
     progress : rich.progress.Progress or None, optional

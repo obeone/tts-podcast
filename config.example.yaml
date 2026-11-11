@@ -14,7 +14,7 @@ gemini:
   # Name of the environment variable holding your Gemini API key
   api_key_env: GEMINI_API_KEY
   # Gemini model for dialogue generation (text / script writer)
-  text_model: gemini-3.5-flash
+  text_model: gemini-3.8-flash
   # Gemini model for TTS audio generation.
   # gemini-3.8-flash-tts is the flagship; gemini-3.8-flash-lite-tts is the
   # cheaper, faster sibling with the same request schema. Both read the text
@@ -25,9 +25,10 @@ gemini:
   tts_model: gemini-3.8-flash-tts
   # Optional: API service tier — "flex" (cheaper/slower) or "priority"
   # (faster/pricier).  Omit or leave empty for standard tier.
-  # TTS does not support service tiers.
+  # Applies to text and research calls only: TTS calls are always sent on
+  # the standard tier.
   # service_tier: flex
-  # Language for the generated podcast dialogue and TTS preamble
+  # Language for the generated podcast dialogue
   language: French
   # ── Voices ──────────────────────────────────────────────────────
   # Speakers are chosen via a named "duo". Five duos ship built-in, each a
@@ -46,13 +47,15 @@ gemini:
   # each voice's one-word descriptor to the personality for the best result.
   #
   # `voice_direction` (optional, per speaker) is a Director's Note read ONLY by
-  # the TTS preamble: it covers register, tempo, articulation and breathing, and
+  # the TTS stage: it covers register, tempo, articulation and breathing, and
   # never reaches the dialogue prompt (so it changes how a line is delivered,
   # never what gets written). It is the mirror image of `style_overlay`, which
   # is dialogue-only and never reaches TTS. Write the two speakers' directions
   # as opposites on all four axes: two similar directions bring back the
-  # "both hosts sound the same" problem. Keep each one under ~160 characters,
-  # it is prepended to every TTS request and eats into the byte budget.
+  # "both hosts sound the same" problem. Keep each one under ~160 characters:
+  # on Gemini 3.8+ TTS it is sent as the delivery style of every turn of that
+  # speaker, where short strings hold a voice steadier than long ones; on
+  # earlier models it sits in the preamble and eats into the byte budget.
   #
   # `scene` and `pace` at the duo level are DEFAULTS for gemini.tts_style below.
   # They apply only when tts_style.scene / tts_style.pace are unset or empty:
@@ -83,7 +86,7 @@ gemini:
   #   # voice acting keeps reading the baseline `personality` above unchanged.
   #   # CLI flag --speaker1-style overrides this for one run.
   #   # style_overlay: ""
-  #   # Optional Director's Note applied to the TTS preamble only (register,
+  #   # Optional Director's Note applied to the TTS stage only (register,
   #   # tempo, articulation, breathing). Never reaches the dialogue prompt.
   #   # voice_direction: "Low chest register, unhurried. Long rounded vowels, legato; a full beat of silence at each stop."
   # speaker2:
@@ -141,7 +144,7 @@ gemini:
     # angle: "the regulatory implications"
   # Optional override for the research model. Defaults to gemini.text_model.
   # research:
-  #   model: gemini-2.5-flash
+  #   model: gemini-3.5-flash-lite
 
 research:
   # Default number of Google-Search-grounded research rounds (override
@@ -149,7 +152,7 @@ research:
   rounds_default: 0
   # Optional override of the model used for research (Gemini + Google Search).
   # Defaults to gemini.text_model when omitted.
-  # model: gemini-3.5-flash
+  # model: gemini-3.5-flash-lite
 
 # Link following (optional) — activated per run with --follow-links
 # [--follow-depth N]. When enabled, after the inputs are scraped/loaded the
@@ -169,7 +172,7 @@ follow:
   max_links_total: 20
   # Optional override of the model used for the content-relevance judgement.
   # Defaults to gemini.text_model when omitted.
-  # model: gemini-2.5-flash
+  # model: gemini-3.5-flash-lite
 
 scraping:
   # HTTP request timeout in seconds for article fetches
