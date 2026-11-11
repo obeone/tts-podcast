@@ -15,8 +15,14 @@ gemini:
   api_key_env: GEMINI_API_KEY
   # Gemini model for dialogue generation (text / script writer)
   text_model: gemini-3.5-flash
-  # Gemini model for TTS audio generation
-  tts_model: gemini-3.1-flash-tts-preview
+  # Gemini model for TTS audio generation.
+  # gemini-3.8-flash-tts is the flagship; gemini-3.8-flash-lite-tts is the
+  # cheaper, faster sibling with the same request schema. Both read the text
+  # as a verbatim transcript, so the tool sends each speaker turn with
+  # structured metadata instead of a text preamble (needs google-genai >= 2.25).
+  # Earlier models (gemini-3.1-flash-tts-preview, gemini-2.5-*-preview-tts)
+  # still work and keep the preamble.
+  tts_model: gemini-3.8-flash-tts
   # Optional: API service tier — "flex" (cheaper/slower) or "priority"
   # (faster/pricier).  Omit or leave empty for standard tier.
   # TTS does not support service tiers.
@@ -114,7 +120,11 @@ gemini:
     # and the pace that match its dynamic, and an explicit value here always
     # wins over the duo's, which would make every duo sound alike again.
     # Uncomment only to pin one setting across all duos.
-    # pace: "slow and deliberate" # natural-language pace for TTS preamble
+    # On Gemini 3.8+ TTS, `pace` is sent with each speaker's voice_direction
+    # as the per-turn delivery style; `scene` and the personalities are not
+    # sent to the TTS model at all (persona prose makes those voices drift).
+    # On earlier models all of them go into the TTS preamble.
+    # pace: "slow and deliberate" # natural-language pace for the TTS delivery
     # scene: "Two friends co-hosting a casual French tech podcast in a cozy studio"
     temperature: 1.2 # 0.0–2.0 — higher = more expressive
   # Style & angle (optional) — shape the dialogue content. CLI flags
@@ -199,9 +209,75 @@ output:
 #       output_per_1m: 1.50
 
 pricing:
+  # Rates from https://ai.google.dev/gemini-api/docs/pricing, paid tier,
+  # USD per 1M tokens, checked 2026-11-11. Text input rates; the "prompts
+  # <= 200k tokens" rate where Google splits by prompt size. Several models
+  # are on an introductory rate that doubles on a published date: the entry
+  # holds the rate in force on the check date, and the comment above it gives
+  # the next one. Update the numbers when that date passes.
+
   # ── Text models ──────────────────────────────────────────────
 
-  # 3.5 Flash — official tiered pricing (https://ai.google.dev/gemini-api/docs/pricing)
+  # Gemini 4 — introductory rates through 2026-11-30. From 2026-12-01:
+  # standard 4.00 / 20.00, flex 2.00 / 10.00, priority 7.20 / 36.00.
+  gemini-4-carbon:
+    standard:
+      input_per_1m: 2.00
+      output_per_1m: 10.00
+    flex:
+      input_per_1m: 1.00
+      output_per_1m: 5.00
+    priority:
+      input_per_1m: 3.60
+      output_per_1m: 18.00
+
+  gemini-4-argon:
+    standard:
+      input_per_1m: 2.00
+      output_per_1m: 10.00
+    flex:
+      input_per_1m: 1.00
+      output_per_1m: 5.00
+    priority:
+      input_per_1m: 3.60
+      output_per_1m: 18.00
+
+  # 3.8 Flash / 3.6 Flash — introductory rates through 2026-12-31. From
+  # 2027-01-01: standard 1.50 / 7.50, flex 0.75 / 3.75, priority 2.70 / 13.50.
+  gemini-3.8-flash:
+    standard:
+      input_per_1m: 0.75
+      output_per_1m: 3.75
+    flex:
+      input_per_1m: 0.375
+      output_per_1m: 1.875
+    priority:
+      input_per_1m: 1.35
+      output_per_1m: 6.75
+
+  gemini-3.6-flash:
+    standard:
+      input_per_1m: 0.75
+      output_per_1m: 3.75
+    flex:
+      input_per_1m: 0.375
+      output_per_1m: 1.875
+    priority:
+      input_per_1m: 1.35
+      output_per_1m: 6.75
+
+  gemini-3.5-flash-lite:
+    standard:
+      input_per_1m: 0.30
+      output_per_1m: 2.50
+    flex:
+      input_per_1m: 0.15
+      output_per_1m: 1.25
+    priority:
+      input_per_1m: 0.54
+      output_per_1m: 4.50
+
+  # 3.5 Flash — no longer listed on the pricing page; last published rates.
   gemini-3.5-flash:
     standard:
       input_per_1m: 1.50
@@ -212,6 +288,39 @@ pricing:
     priority:
       input_per_1m: 2.70
       output_per_1m: 16.20
+
+  gemini-3.1-pro-preview:
+    standard:
+      input_per_1m: 2.00
+      output_per_1m: 12.00
+    flex:
+      input_per_1m: 1.00
+      output_per_1m: 6.00
+    priority:
+      input_per_1m: 3.60
+      output_per_1m: 21.60
+
+  gemini-3.1-flash-lite:
+    standard:
+      input_per_1m: 0.25
+      output_per_1m: 1.50
+    flex:
+      input_per_1m: 0.125
+      output_per_1m: 0.75
+    priority:
+      input_per_1m: 0.45
+      output_per_1m: 2.70
+
+  gemini-3-flash-preview:
+    standard:
+      input_per_1m: 0.50
+      output_per_1m: 3.00
+    flex:
+      input_per_1m: 0.25
+      output_per_1m: 1.50
+    priority:
+      input_per_1m: 0.90
+      output_per_1m: 5.40
 
   gemini-2.5-pro:
     standard:
@@ -246,7 +355,8 @@ pricing:
       input_per_1m: 0.18
       output_per_1m: 0.72
 
-  # 2.0 models: no flex/priority tiers available
+  # 2.0 models — no flex/priority tiers, and no longer listed on the pricing
+  # page; last published rates.
   gemini-2.0-flash:
     input_per_1m: 0.10
     output_per_1m: 0.40
@@ -255,11 +365,20 @@ pricing:
     input_per_1m: 0.075
     output_per_1m: 0.30
 
-  # ── TTS models (no service tier support) ─────────────────────
+  # ── TTS models ───────────────────────────────────────────────
+  # Standard-tier rates in the flat format: this tool never sends a service
+  # tier on TTS calls, so a tiered entry would not be read any differently.
 
-  # 3.1 Flash TTS Preview — not on the public pricing page at time of writing.
-  # Estimate aligned with gemini-2.5-pro-preview-tts; update once Google
-  # publishes the official rate.
+  # Gemini 3.8 TTS — introductory rates through 2026-12-31. From 2027-01-01:
+  # Flash TTS 1.00 / 18.00, Flash-Lite TTS 1.00 / 12.00.
+  gemini-3.8-flash-tts:
+    input_per_1m: 0.50
+    output_per_1m: 9.00
+
+  gemini-3.8-flash-lite-tts:
+    input_per_1m: 0.50
+    output_per_1m: 6.00
+
   gemini-3.1-flash-tts-preview:
     input_per_1m: 1.00
     output_per_1m: 20.00

@@ -103,7 +103,7 @@ per-speaker Director's Note covering four axes and nothing else.
 - **articulation** (hard attacks and clipped endings, legato, rounded vowels)
 - **breathing** (silent, snatched on the fly, a full beat at every stop)
 
-It is read **only** by the TTS preamble, so it changes how a line sounds and
+It is read **only** by the TTS stage, so it changes how a line sounds and
 never what the script says. It is the mirror image of `style_overlay`, which is
 dialogue-only and never reaches TTS.
 
@@ -153,6 +153,27 @@ directions but a long `scene` can still cross the 800-byte line and get slightly
 smaller chunks than it used to. Keeping each direction under about 160
 characters and the scene to one line leaves comfortable room; when a config
 really does run out, the tool logs a warning naming the fields to trim.
+
+### Gemini 3.8 TTS
+
+`gemini-3.8-flash-tts` (the default) and `gemini-3.8-flash-lite-tts` read the
+text as a verbatim transcript: a preamble, a `Name:` prefix or a `[curiosity]`
+cue written in it would be spoken aloud. With one of these models the tool
+therefore works differently from the paragraphs above:
+
+- There is no preamble. Each speaker turn is sent on its own, tagged with its
+  speaker and a short delivery style made of that host's `voice_direction`
+  plus the active `pace`.
+- `personality` and `tts_style.scene` are not sent to the TTS model. They still
+  shape the script; Google's guidance is that persona prose in the request is
+  what makes these voices drift.
+- The script carries no emotional cues. The only inline markup is a handful of
+  vocal tags such as `<laugh>`, `<sigh>` or `<short pause>`, and
+  `tts_style.audio_tags: off` removes those too.
+- With no preamble to fit in, chunks always keep their full size.
+
+Earlier models (`gemini-3.1-flash-tts-preview`, `gemini-2.5-*-preview-tts`) are
+detected from the model name and keep the preamble behaviour described above.
 
 ### Custom duos
 
