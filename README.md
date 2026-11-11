@@ -448,6 +448,10 @@ worth mining.
 | `uv run ruff check src/ tests/` | Lint. |
 | `uv run tts-podcast run -n <URL>` | Dry run from the checkout: script only, no TTS. |
 
+A release is a tag: once the version bump is merged, pushing `vX.Y.Z` builds
+the package, publishes it to PyPI and creates the GitHub Release. The tag must
+match the version in `pyproject.toml`.
+
 Tests mock the Gemini SDK and never hit the network. See
 [`AGENTS.md`](AGENTS.md) for the architecture notes and the invariants worth
 knowing before changing the pipeline.

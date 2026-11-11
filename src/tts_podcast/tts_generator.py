@@ -50,7 +50,8 @@ _TTS_MAX_WORKERS = 5
 
 # Default sampling temperature for the TTS model.
 # Each chunk is a long, standalone generation (a couple of KB of text) started
-# from the same calm preamble.  At temperature 1.0 the multi-speaker model
+# from the same calm preamble (pre-3.8 models) or the same per-speaker style
+# strings (3.8+).  At temperature 1.0 the multi-speaker model
 # tends to drift toward over-expression as it reads on — an enthusiastic host
 # ramps up within a chunk and "runs out of breath", giving an audible
 # per-chunk sawtooth.  A lower default keeps prosody steady while staying
@@ -326,9 +327,11 @@ def _generate_chunk_audio(
     """
     Generate PCM audio for a single dialogue chunk.
 
-    Builds the TTS prompt, calls the Gemini TTS API with retry, and returns
-    the raw PCM bytes together with the response usage metadata for token
-    accounting.
+    Builds the request contents for the model's schema (a preamble string for
+    models before Gemini 3.8, one ``speech_metadata`` part per turn from 3.8
+    on), calls the Gemini TTS API with retry, and returns the raw PCM bytes
+    (a WAV payload is unwrapped by :func:`_to_pcm`) together with the
+    response usage metadata for token accounting.
 
     Parameters
     ----------
@@ -353,7 +356,9 @@ def _generate_chunk_audio(
     Raises
     ------
     RuntimeError
-        If the TTS API returns an unexpected response structure.
+        If the TTS API returns an unexpected response structure, if a chunk
+        sent to a Gemini 3.8+ model holds no speaker turn, or if a WAV payload
+        is not 24 kHz / mono / 16-bit.
     """
     contents: str | list[types.Part]
     if uses_speech_metadata(gemini_cfg["tts_model"]):
@@ -417,12 +422,14 @@ def generate_audio_chunks(
     """
     Convert a list of dialogue chunks into raw PCM audio bytes using Gemini TTS.
 
-    Each chunk is sent as a separate TTS request so that the 4 000-byte text
-    limit is respected.  Requests are issued in parallel (up to
+    Each chunk is sent as a separate TTS request so that the request stays
+    within the model's input limit.  Requests are issued in parallel (up to
     :data:`_TTS_MAX_WORKERS` concurrent workers) and results are returned in
-    the same order as the input.  A natural-language audio profile preamble is
-    prepended to each chunk to give the TTS model personality and emotional
-    context.
+    the same order as the input.  For models before Gemini 3.8 a
+    natural-language audio profile preamble is prepended to each chunk to give
+    the TTS model personality and emotional context; Gemini 3.8+ models get
+    one ``speech_metadata`` part per speaker turn instead (see
+    :func:`_build_tts_parts`).
 
     Parameters
     ----------
@@ -453,7 +460,8 @@ def generate_audio_chunks(
     Raises
     ------
     RuntimeError
-        If the Gemini API returns an unexpected response structure for any chunk.
+        If the Gemini API returns an unexpected response structure or audio
+        format for any chunk, or a Gemini 3.8+ chunk holds no speaker turn.
 
     Examples
     --------

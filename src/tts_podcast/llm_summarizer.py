@@ -30,9 +30,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Byte budget for a single TTS request.  tts_generator._build_tts_prompt
-# prepends a preamble to every chunk, so the constraint is
-# (preamble + chunk) < _TTS_TEXT_LIMIT.
+# Byte budget for a single TTS request.  On models before Gemini 3.8,
+# tts_generator._build_tts_prompt prepends a preamble to every chunk, so the
+# constraint is (preamble + chunk) < _TTS_TEXT_LIMIT.  Gemini 3.8+ models get
+# no preamble and always use _MAX_CHUNK_BYTES (see _resolve_chunk_budget).
 #
 # Rather than pin the chunk size to a static worst case, the budget is resolved
 # per run by _resolve_chunk_budget(), which measures the *actual* preamble the
@@ -266,7 +267,10 @@ def _audio_tags_enabled(gemini_cfg: dict) -> bool:
             setting,
         )
     tts_model = str(gemini_cfg.get("tts_model", "")).lower()
-    return tts_model.startswith("gemini-3")
+    # The second test keeps the two switches in step past the 3.x line: a later
+    # model already gets the speech-metadata request from uses_speech_metadata,
+    # and must not lose its vocal tags just because its name moved on.
+    return tts_model.startswith("gemini-3") or uses_speech_metadata(tts_model)
 
 
 def _build_thinking_config(
@@ -552,7 +556,9 @@ def _build_prompt(
         Language for the generated dialogue, by default ``"French"``.
     audio_tags : bool, optional
         When ``True``, instruct the LLM to use bracketed audio tags
-        (e.g. ``"[enthusiasm]"``) rather than parenthetical cues.
+        (e.g. ``"[enthusiasm]"``) rather than parenthetical cues.  With
+        *verbatim_transcript* set, it instead decides whether angle-bracket
+        vocal tags (``<laugh>``) are allowed.
     research_notes : str, optional
         Complementary research notes (markdown bullet points) to inject into
         the prompt under a "Complementary research" section.  Empty string

@@ -22,6 +22,10 @@ uv run ruff check src/ tests/              # lint
 
 The Gemini API key is read at runtime from the env var named by `gemini.api_key_env` (default `GEMINI_API_KEY`). Loaded from `.env` automatically via `python-dotenv` at CLI startup.
 
+### Releasing
+
+Bump `version` in `pyproject.toml`, run `uv lock`, commit both as `chore: bump version to X.Y.Z`, merge to `main`, then push the tag `vX.Y.Z`. The tag is the release: `.github/workflows/publish.yml` checks it against the `pyproject.toml` version, builds, publishes to PyPI (Trusted Publishing, nothing to configure in the repo) and creates the GitHub Release with generated notes. A PyPI upload cannot be replaced, so a wrong tag is fixed by a new version, never by re-tagging. Do not rename that workflow file or its `pypi` environment: the PyPI trusted publisher is bound to both.
+
 ## Architecture
 
 The pipeline in `cli.py::run` is strictly linear; each stage produces dataclasses defined in or near its own module and the next stage consumes them. There is no mutable shared state besides `TokenTracker`.
@@ -49,7 +53,8 @@ URLs ── web_scraper.scrape_urls ──► list[Source]
                                        │
                                        ▼
                               list[DialogueChunk]  (byte budget resolved per run from the rendered
-                                                    TTS preamble, 1500-3000, split at speaker turns)
+                                                    TTS preamble, 1500-3000, or a flat 3000 on
+                                                    Gemini 3.8+ TTS; split at speaker turns)
                                        │
         tts_generator.generate_audio_chunks (parallel, ThreadPool ≤5)
                                        │
@@ -102,7 +107,7 @@ CLI flags override config: `-R/--research`, `-d/--duration`, `-o/--output-dir`. 
 | `cloak_fetcher.py` | Optional `cloakbrowser` stealth-Chromium fetch (graceful no-op when absent) |
 | `local_loader.py` | Local file reader (txt, md, html via trafilatura, pdf via pypdf) |
 | `research.py` | Iterative Gemini + Google Search grounding rounds |
-| `llm_summarizer.py` | Dialogue generation + byte-bounded chunking (budget measured per run from the TTS preamble) |
+| `llm_summarizer.py` | Dialogue generation + byte-bounded chunking (budget measured per run from the TTS preamble; fixed at the maximum for Gemini 3.8+ TTS, which has none) |
 | `tts_generator.py` | Gemini multi-speaker TTS, parallel (≤5 workers); preamble or per-turn `speech_metadata` requests, WAV unwrapped to PCM |
 | `tts_models.py` | `uses_speech_metadata`: which request schema a TTS model expects |
 | `audio_exporter.py` | PCM → mp3/wav via pydub + ffmpeg |
