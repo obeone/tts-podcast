@@ -1,17 +1,19 @@
 # 🎙️ tts-podcast
 
 [![PyPI](https://img.shields.io/pypi/v/tts-podcast?logo=pypi&logoColor=white)](https://pypi.org/project/tts-podcast/)
+[![CI](https://github.com/obeone/tts-podcast/actions/workflows/ci.yml/badge.svg)](https://github.com/obeone/tts-podcast/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.13+-blue?logo=python&logoColor=white)
-![Gemini TTS](https://img.shields.io/badge/Gemini-multi--speaker%20TTS-8E75B2?logo=googlegemini&logoColor=white)
+![Gemini TTS](https://img.shields.io/badge/Gemini-3.8%20multi--speaker%20TTS-8E75B2?logo=googlegemini&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-> Turn any article, document, or search query into a **two-voice podcast** —
+> Turn any article, document, or search query into a **two-voice podcast**:
 > scraped, researched, scripted, and voiced by Google Gemini.
 
 Feed it URLs, local files, or a topic to search. It scrapes the sources,
-optionally runs iterative Google-Search-grounded research, writes a natural
-back-and-forth dialogue between two hosts, and synthesises an MP3 (or WAV)
-with Gemini's multi-speaker TTS — plus an optional folder of Markdown reports.
+optionally runs iterative [Google-Search-grounded][grounding] research, writes
+a back-and-forth dialogue between two hosts, and synthesises an MP3 (or WAV)
+with Gemini's multi-speaker TTS. An optional folder of Markdown reports comes
+with it.
 
 ---
 
@@ -19,15 +21,15 @@ with Gemini's multi-speaker TTS — plus an optional folder of Markdown reports.
 
 | | Feature | Description |
 |---|---|---|
-| 🌐 | **Any URL → podcast** | Feed one or several article URLs; scraping, dialogue, and audio are handled end-to-end. |
-| 📄 | **Local documents** | Include `.txt`, `.md`, `.html`, or `.pdf` files with `-f` — no network request. |
+| 🌐 | **Any URL → podcast** | Feed one or several article URLs; scraping, dialogue, and audio are handled end to end. |
+| 📄 | **Local documents** | Include `.txt`, `.md`, `.html`, or `.pdf` files with `-f`, with no network request. |
 | 🔍 | **Web-search queries** | Pass a natural-language topic with `-s`; the research stage investigates it via Google Search grounding. |
 | 🧠 | **Iterative research** | `--research N` runs *N* sequential grounded rounds, each drilling into the gaps the last one left. |
-| 🔗 | **Follow links** | `--follow-links` discovers and traverses interesting links inside the inputs (heuristic pre-filter + LLM relevance judge); kept pages feed research and dialogue. |
-| 🎭 | **Multi-voice TTS** | Two distinct Gemini voices with configurable personalities, scene, and delivery cues. |
-| 👥 | **Named voice duos** | Five built-in pairings (`contrast` default, `warm`, `explorer`, `journalist`, `debate`), each a different conversational dynamic. Or define your own from all 30 prebuilt Gemini voices. |
+| 🔗 | **Follow links** | `--follow-links` walks the links inside the inputs (URL heuristic, then an LLM relevance judge); kept pages feed research and dialogue. |
+| 🎭 | **Multi-voice TTS** | Two distinct Gemini voices. Gemini 3.8 TTS by default, earlier TTS models still supported. |
+| 👥 | **Named voice duos** | Five built-in pairings (`contrast` default, `warm`, `explorer`, `journalist`, `debate`), each a different conversational dynamic. Or define your own from the 30 prebuilt Gemini voices. |
 | 🎚️ | **Per-speaker voice direction** | Give each host its own register, tempo, articulation, and breathing so the two never render with the same delivery. |
-| 🎨 | **Style & angle control** | Presets, free-text style, per-episode angle, and per-speaker overlays — without touching the baseline voice acting. |
+| 🎨 | **Style & angle control** | Presets, free-text style, per-episode angle, and per-speaker overlays that leave the baseline voice acting alone. |
 | 📑 | **Report folder** | Opt-in with `--report`: writes `overview.md`, `sources.md`, `script.md`, `research.md`, and `summary.md` next to the audio. |
 | 💸 | **Token & cost tracking** | Accumulates per-model token usage and estimates cost from configurable pricing. |
 | 🥷 | **Stealth fallback** | Optional CloakBrowser retry for pages that block plain scraping (Cloudflare, 403/429, JS-only). |
@@ -46,150 +48,98 @@ export GEMINI_API_KEY=<your key>
 # 2. Make sure ffmpeg is available (audio export needs it)
 brew install ffmpeg            # macOS  ·  apt: sudo apt install ffmpeg
 
-# 3. Run it — no install required
+# 3. Run it, no install required
 uvx tts-podcast run https://blog.example.com/article
 ```
 
-That's it: you get an `.mp3`. Add `--report` for a `tts_<stem>/` folder of
-Markdown reports, or `-O out.mp3` / `-O -` to choose the filename or stream to
-stdout. Want to hear the script before spending TTS tokens? Add `-n` for a dry run.
-
-> Prefer a permanent install or `pip`? See [Installation](#-installation).
+You get an `.mp3`. Add `--report` for a `tts_<stem>/` folder of Markdown
+reports, or `-O out.mp3` / `-O -` to choose the filename or stream to stdout.
+To read the script before spending TTS tokens, add `-n` for a dry run.
 
 ---
 
-## 👥 Voice duos
-
-A *duo* bundles both speakers (name, prebuilt Gemini voice, baseline
-personality, and per-speaker voice direction) under one slug, so you swap the
-whole pairing at once instead of editing `speaker1` / `speaker2` by hand.
+## 📦 Installation
 
 ```bash
-tts-podcast duos          # list them (no API key needed)
-tts-podcast run --duo journalist https://blog.example.com/article
+uvx tts-podcast …                # run without installing
+uv tool install tts-podcast      # persistent install via uv
+pipx install tts-podcast         # via pipx
+pip install tts-podcast          # plain pip
 ```
 
-### Built-in duos
+The optional stealth-browser fallback pulls a ~200 MB Chromium on first run:
 
-Each duo is a different *conversational dynamic*, not the same "excited host
-plus calm analyst" pairing under five names. The ten voices are all distinct,
-and inside a duo the two voice directions are opposed on register, tempo,
-articulation, and breathing.
+```bash
+uv tool install "tts-podcast[cloak]"
+```
 
-| Slug | Speaker 1 | Speaker 2 | Dynamic |
-|---|---|---|---|
-| `contrast` *(default)* | Theo, voice Puck (Upbeat) | Nadia, voice Kore (Firm) | **Tempo flip.** An idea machine firing in bursts against an editor who lands it in one sentence. They agree, they just run at different speeds. |
-| `warm` | Vera, voice Gacrux (Mature) | Milo, voice Achird (Friendly) | **Transmission.** A settled storyteller hands the thread to the listener's stand-in. Long turn, short reaction, real silence. |
-| `explorer` | Iris, voice Achernar (Soft) | Sam, voice Sadachbia (Lively) | **Co-discovery.** Two non-experts approaching the same thing from opposite ends; nobody holds the answer, nobody corrects the other. |
-| `journalist` | Nora, voice Pulcherrima (Forward) | Marc, voice Charon (Informative) | **Role asymmetry.** A desk anchor asking short questions, a field correspondent answering long and sourced. |
-| `debate` | Robin, voice Autonoe (Bright) | Sasha, voice Algenib (Gravelly) | **Open conflict.** Optimist against skeptic, one escalating up and the other down (pair with `--preset debate`). |
+`ffmpeg` is required for audio export. You can skip it only if you stick to
+`--no-audio` / `--dry-run`:
 
-Each duo also ships a `scene` and a `pace` matching its dynamic. Those are
-defaults: anything you set in `gemini.tts_style.scene` / `.pace` wins.
+```bash
+brew install ffmpeg          # macOS
+sudo apt install ffmpeg      # Debian / Ubuntu
+```
 
-> Gemini doesn't officially document voice gender; pairings are curated from
-> each voice's [official descriptor][voices] plus community reports. Audition
-> them in [Google AI Studio][voices] before committing.
+### From source
 
-### Voice direction
+```bash
+git clone https://github.com/obeone/tts-podcast.git
+cd tts-podcast
+uv sync                      # Python 3.13+
+uv run tts-podcast --help
+```
 
-Two hosts used to come out sounding like the same person: the TTS preamble
-described *who* each host was but never *how* they spoke, so the model averaged
-both deliveries into one. `voice_direction` fixes that: an optional
-per-speaker Director's Note covering four axes and nothing else.
+From a source checkout, prefix every command in this README with `uv run`
+(for example `uv run tts-podcast run …`).
 
-- **register** (low chest, mid, bright upper, forward placement)
-- **tempo** (staccato bursts, metronomic, half speed)
-- **articulation** (hard attacks and clipped endings, legato, rounded vowels)
-- **breathing** (silent, snatched on the fly, a full beat at every stop)
+---
 
-It is read **only** by the TTS stage, so it changes how a line sounds and
-never what the script says. It is the mirror image of `style_overlay`, which is
-dialogue-only and never reaches TTS.
+## ⚙️ Configuration
 
-Writing your own: pick one host, then make the other the opposite on all four
-axes. Describe a steady trait, not a trajectory ("low and slow", not "starts
-calm then builds"), and keep each note under ~160 characters (it rides along
-with every TTS request).
+Scaffold a config file, then export your Gemini API key:
+
+```bash
+tts-podcast config init
+export GEMINI_API_KEY=<your key>
+```
+
+The config lives at `$XDG_CONFIG_HOME/tts-podcast/config.yaml` (typically
+`~/.config/tts-podcast/config.yaml`). The full schema, with every key
+commented, is in [`config.example.yaml`](config.example.yaml). The API key is
+read at runtime from the env var named by `gemini.api_key_env` (default
+`GEMINI_API_KEY`) and loaded from a local `.env` automatically.
 
 ```yaml
 gemini:
-  default_duo: my_duo
-  duos:
-    my_duo:
-      description: "my custom pairing"
-      scene: "a bare table, two microphones facing each other"
-      pace: "quick exchanges, no dead air"
-      speaker1:
-        name: Robin
-        voice: Autonoe     # Bright
-        personality: "a techno-optimist who champions the upside"
-        voice_direction: >-
-          Bright upper register, leaning into the mic. Quick, no gap between
-          sentences; pitch climbing through the clause, breath snatched on the fly.
-      speaker2:
-        name: Sasha
-        voice: Algenib     # Gravelly
-        personality: "a hard-nosed skeptic who probes risks and costs"
-        voice_direction: >-
-          Low gravelly register, dropping in volume instead of rising. Slow, a
-          long beat before each answer; blunt consonants, falling endings.
+  api_key_env: GEMINI_API_KEY
+  text_model: gemini-3.8-flash
+  tts_model: gemini-3.8-flash-tts
+  default_duo: contrast        # persistent voice pairing
+  dialogue:
+    target_duration_minutes: 8
 ```
 
-The same key works on legacy `gemini.speaker1` / `speaker2` blocks. Leave it out
-and the preamble is byte-identical to what it was before the feature existed, so
-existing configs sound exactly as they did.
+| Key | Default | What it does |
+|---|---|---|
+| `gemini.text_model` | `gemini-3.8-flash` | Writes the script. Also used for research and link judging unless overridden. |
+| `gemini.tts_model` | `gemini-3.8-flash-tts` | Voices the script. `gemini-3.8-flash-lite-tts` is the cheaper sibling. |
+| `gemini.service_tier` | (standard) | `flex` or `priority`, for text and research calls. TTS calls always go out on the standard tier. |
+| `gemini.language` | `French` | Language of the dialogue. |
+| `gemini.default_duo` | `contrast` | Voice pairing, see [Voice duos](#-voice-duos). |
+| `gemini.dialogue.target_duration_minutes` | `8` | Episode length. `-d` overrides it for one run. |
+| `gemini.tts_style.audio_tags` | `auto` | `on` / `off` / `auto`: whether the script may carry inline vocal tags. |
+| `research.rounds_default` | `0` | Research rounds when `-R` is not passed. |
+| `scraping.cloak_fallback` | `false` | Retry blocked pages through CloakBrowser. |
+| `output.format` | `mp3` | `mp3` or `wav`. |
+| `pricing` | (see example) | Per-model rates behind the cost estimate. |
 
-A voice direction does cost room: it rides at the top of every TTS request,
-alongside the dialogue itself. The tool measures the preamble your config
-actually renders and sizes the dialogue chunks against what is left. As long as
-that whole preamble stays at or under 800 bytes, the chunks keep their full
-size, so the request count and the number of audio joins are unchanged. Past
-that, chunks shrink byte for byte and an episode is cut into a few more pieces.
-
-Voice directions are not the only thing in the preamble: the host personalities,
-`tts_style.scene` and `tts_style.pace` all sit in it too. A config with no voice
-directions but a long `scene` can still cross the 800-byte line and get slightly
-smaller chunks than it used to. Keeping each direction under about 160
-characters and the scene to one line leaves comfortable room; when a config
-really does run out, the tool logs a warning naming the fields to trim.
-
-### Gemini 3.8 TTS
-
-`gemini-3.8-flash-tts` (the default) and `gemini-3.8-flash-lite-tts` read the
-text as a verbatim transcript: a preamble, a `Name:` prefix or a `[curiosity]`
-cue written in it would be spoken aloud. With one of these models the tool
-therefore works differently from the paragraphs above:
-
-- There is no preamble. Each speaker turn is sent on its own, tagged with its
-  speaker and a short delivery style made of that host's `voice_direction`
-  plus the active `pace`.
-- `personality` and `tts_style.scene` are not sent to the TTS model. They still
-  shape the script; Google's guidance is that persona prose in the request is
-  what makes these voices drift.
-- The script carries no emotional cues. The only inline markup is a handful of
-  vocal tags such as `<laugh>`, `<sigh>` or `<short pause>`, and
-  `tts_style.audio_tags: off` removes those too.
-- With no preamble to fit in, chunks always keep their full size.
-
-Earlier models (`gemini-3.1-flash-tts-preview`, `gemini-2.5-*-preview-tts`) are
-detected from the model name and keep the preamble behaviour described above.
-
-### Custom duos
-
-Duos defined under `gemini.duos` merge over the built-ins: the same slug
-overrides one, a new slug adds one. Only `name` and `voice` are required per
-speaker; `personality`, `voice_direction`, `description`, `scene`, and `pace`
-are all optional.
-
-Write `personality` as a noun phrase starting with `a` / `an` / `the`: the TTS
-preamble renders it as `<name> is <personality>.`, so a bare job title
-("desk anchor; presses with short questions") ships broken English to the model
-and pushes it back toward one averaged delivery.
-
-**Resolution precedence:** `--duo` › `gemini.default_duo` ›
-legacy `gemini.speaker1` / `speaker2` blocks › built-in `contrast`. A config
-that defines only the legacy `speakerN` blocks keeps working unchanged.
+A model with no entry under `pricing` is costed at zero, so the estimate is
+only as good as that table. Run from a source checkout, `config init` copies
+the rates from `config.example.yaml` and, on a re-run, adds the models you do
+not have yet without touching the rates you already set. Installed from PyPI,
+copy the `pricing` section over by hand. Several Gemini models are on
+introductory rates with a published end date; the example file notes each one.
 
 ---
 
@@ -202,10 +152,10 @@ tts-podcast run https://blog.example.com/article
 # Multiple URLs with two rounds of complementary research
 tts-podcast run -R 2 https://blog.example.com/a https://blog.example.com/b
 
-# Local document — no network request
+# Local document, no network request
 tts-podcast run -n -f paper.pdf
 
-# Web-search query — research auto-bumped to 1 if it's the only input
+# Web-search query (research is bumped to 1 round when it is the only input)
 tts-podcast run -n -s "agentic AI memory systems"
 
 # Follow interesting links found inside the inputs (2 hops deep)
@@ -245,17 +195,23 @@ tts-podcast run \
 tts-podcast run --duo debate --preset debate https://blog.example.com/article
 ```
 
-> Running from a source checkout? Prefix every command with `uv run`
-> (e.g. `uv run tts-podcast run …`).
+### Commands
 
-### Key flags
+| Command | Description |
+|---|---|
+| `tts-podcast run [INPUTS]…` | Full pipeline: URLs, `-f` files, `-s` search queries. |
+| `tts-podcast duos` | List the voice duos, built-in and config-defined. Needs no API key. |
+| `tts-podcast config init` | Create or update the config file interactively. |
+| `tts-podcast config show` | Print the config file. `--resolve` shows resolved values with secrets masked. |
+
+### Key flags of `run`
 
 | Flag | Description |
 |---|---|
 | `-f, --file FILE` | Local document to include (repeatable). `.txt`, `.md`, `.html`, `.pdf`. |
-| `-s, --search QUERY` | Web-search query to seed the podcast (repeatable). Auto-bumps research to 1 if search-only. |
+| `-s, --search QUERY` | Web-search query to seed the podcast (repeatable). Bumps research to 1 if search-only. |
 | `-R, --research N` | Number of Google-Search-grounded research rounds (default `0`). |
-| `-L, --follow-links` | After scraping inputs, follow interesting links inside them (heuristic pre-filter + LLM relevance judge). Fetched pages feed research and dialogue. |
+| `-L, --follow-links` | After scraping inputs, follow interesting links inside them. Fetched pages feed research and dialogue. |
 | `--follow-depth N` | Link-following hops when `--follow-links` is set (default `1`). |
 | `--follow-max-links N` | Cap on the total number of links fetched across all hops (default `20`, config `follow.max_links_total`). |
 | `--follow-max-links-per-hop N` | Cap on the number of links fetched per hop (default `5`, config `follow.max_links_per_level`). |
@@ -276,12 +232,144 @@ Run `tts-podcast run --help` for the full list.
 
 ---
 
+## 👥 Voice duos
+
+A *duo* bundles both speakers (name, prebuilt Gemini voice, baseline
+personality, and per-speaker voice direction) under one slug, so you swap the
+whole pairing at once instead of editing `speaker1` / `speaker2` by hand.
+
+```bash
+tts-podcast duos          # list them (no API key needed)
+tts-podcast run --duo journalist https://blog.example.com/article
+```
+
+### Built-in duos
+
+Each duo is its own *conversational dynamic*. The ten voices are all distinct,
+and inside a duo the two voice directions are opposed on register, tempo,
+articulation, and breathing.
+
+| Slug | Speaker 1 | Speaker 2 | Dynamic |
+|---|---|---|---|
+| `contrast` *(default)* | Theo, voice Puck (Upbeat) | Nadia, voice Kore (Firm) | **Tempo flip.** An idea machine firing in bursts against an editor who lands it in one sentence. They agree, they just run at different speeds. |
+| `warm` | Vera, voice Gacrux (Mature) | Milo, voice Achird (Friendly) | **Transmission.** A settled storyteller hands the thread to the listener's stand-in. Long turn, short reaction, real silence. |
+| `explorer` | Iris, voice Achernar (Soft) | Sam, voice Sadachbia (Lively) | **Co-discovery.** Two non-experts approaching the same thing from opposite ends; nobody holds the answer, nobody corrects the other. |
+| `journalist` | Nora, voice Pulcherrima (Forward) | Marc, voice Charon (Informative) | **Role asymmetry.** A desk anchor asking short questions, a field correspondent answering long and sourced. |
+| `debate` | Robin, voice Autonoe (Bright) | Sasha, voice Algenib (Gravelly) | **Open conflict.** Optimist against skeptic, one escalating up and the other down (pair with `--preset debate`). |
+
+Each duo also ships a `scene` and a `pace` matching its dynamic. Those are
+defaults: anything you set in `gemini.tts_style.scene` / `.pace` wins.
+
+> Gemini doesn't officially document voice gender; pairings are curated from
+> each voice's [official descriptor][voices] plus community reports. Audition
+> them in [Google AI Studio][voices] before committing.
+
+### Voice direction
+
+Give a TTS model two personalities and nothing about how each one speaks, and
+it averages both deliveries into one: the two hosts come out sounding like the
+same person. `voice_direction` is an optional per-speaker note covering four
+axes and nothing else.
+
+- **register** (low chest, mid, bright upper, forward placement)
+- **tempo** (staccato bursts, metronomic, half speed)
+- **articulation** (hard attacks and clipped endings, legato, rounded vowels)
+- **breathing** (silent, snatched on the fly, a full beat at every stop)
+
+It is read **only** by the TTS stage, so it changes how a line sounds and
+never what the script says. It is the mirror image of `style_overlay`, which is
+dialogue-only and never reaches TTS.
+
+Writing your own: pick one host, then make the other the opposite on all four
+axes. Describe a steady trait ("low and slow") and avoid a trajectory ("starts
+calm then builds"). Keep each note under ~160 characters, since it travels
+with every TTS request.
+
+```yaml
+gemini:
+  default_duo: my_duo
+  duos:
+    my_duo:
+      description: "my custom pairing"
+      scene: "a bare table, two microphones facing each other"
+      pace: "quick exchanges, no dead air"
+      speaker1:
+        name: Robin
+        voice: Autonoe     # Bright
+        personality: "a techno-optimist who champions the upside"
+        voice_direction: >-
+          Bright upper register, leaning into the mic. Quick, no gap between
+          sentences; pitch climbing through the clause, breath snatched on the fly.
+      speaker2:
+        name: Sasha
+        voice: Algenib     # Gravelly
+        personality: "a hard-nosed skeptic who probes risks and costs"
+        voice_direction: >-
+          Low gravelly register, dropping in volume instead of rising. Slow, a
+          long beat before each answer; blunt consonants, falling endings.
+```
+
+The same key works on legacy `gemini.speaker1` / `speaker2` blocks.
+
+### What reaches the TTS model
+
+Gemini 3.8 TTS (`gemini-3.8-flash-tts`, the default, and
+`gemini-3.8-flash-lite-tts`) reads its input as a verbatim transcript:
+anything written in it gets spoken, a speaker label or a stage direction
+included. So the request is structured:
+
+- Each speaker turn is sent on its own, tagged with its speaker and a short
+  delivery style made of that host's `voice_direction` plus the active `pace`.
+  The same style string goes with every turn of a host.
+- `personality` and `tts_style.scene` are not sent to the TTS model. They still
+  shape the script. Google's guidance for these models is that persona prose
+  in the request is what makes a voice drift.
+- The script carries no emotional cue. The only inline markup is a short list
+  of vocal tags (`<laugh>`, `<chuckle>`, `<sigh>`, `<gasp>`, `<breath>`,
+  `<short pause>`, `<long pause>`), and `tts_style.audio_tags: off` removes
+  those too.
+
+### Earlier TTS models
+
+`gemini-3.1-flash-tts-preview` and the `gemini-2.5-*-preview-tts` models are
+detected from the model name and keep the older request shape: one text block
+per chunk, opening with a preamble that holds the personalities, the voice
+directions, the scene and the pace. The script then carries bracketed tags
+such as `[curiosity]` (3.1) or parenthetical cues in the target language (2.5).
+
+That preamble costs room. The tool measures the one your config actually
+renders and sizes the dialogue chunks against what is left. As long as it
+stays at or under 800 bytes, chunks keep their full size, so the request count
+and the number of audio joins are unchanged. Past that, chunks shrink byte for
+byte and an episode is cut into a few more pieces. A long `scene` alone can
+cross the line; when a config really does run out, the tool logs a warning
+naming the fields to trim. Gemini 3.8 has no preamble, so none of this applies
+there.
+
+### Custom duos
+
+Duos defined under `gemini.duos` merge over the built-ins: the same slug
+overrides one, a new slug adds one. Only `name` and `voice` are required per
+speaker; `personality`, `voice_direction`, `description`, `scene`, and `pace`
+are all optional.
+
+Write `personality` as a noun phrase starting with `a` / `an` / `the`. The
+preamble of the earlier TTS models renders it as `<name> is <personality>.`,
+so a bare job title ("desk anchor; presses with short questions") ships broken
+English to the model.
+
+**Resolution precedence:** `--duo` › `gemini.default_duo` ›
+legacy `gemini.speaker1` / `speaker2` blocks › built-in `contrast`. A config
+that defines only the legacy `speakerN` blocks keeps working unchanged.
+
+---
+
 ## 🔗 Following links
 
-`-L` / `--follow-links` treats your inputs as a starting point rather than the
-whole corpus: once they are scraped, it walks the hyperlinks inside them, keeps
-the pages that turn out to be on topic, and feeds those into both the research
-stage and the dialogue.
+With `-L` / `--follow-links`, your inputs are where the corpus starts: once
+they are scraped, the tool walks the hyperlinks inside them, keeps the pages
+that turn out to be on topic, and feeds those into both the research stage and
+the dialogue.
 
 ```bash
 tts-podcast run -L https://blog.example.com/article
@@ -298,7 +386,7 @@ the content is accurate:
    labels it `core`, `supporting`, or `irrelevant` against your topic. The
    first two are kept, and their verdict follows them into the dialogue prompt,
    the research prompt, and the report. The judge fails open: if the call
-   fails, pages are kept as `supporting` rather than silently dropped.
+   fails, pages are kept as `supporting`.
 
 Every hop costs one Gemini call on top of the fetches, so the traversal is
 capped on both axes:
@@ -310,67 +398,8 @@ capped on both axes:
 | Links in total | 20 | `--follow-max-links` | `follow.max_links_total` |
 
 The total cap overrides depth × per-hop, so it is the single number to lower
-when a run feels expensive. A cap of zero is rejected up front instead of
-turning the whole stage into a silent no-op.
-
----
-
-## ⚙️ Configuration
-
-Scaffold a config file, then export your Gemini API key:
-
-```bash
-tts-podcast config init
-export GEMINI_API_KEY=<your key>
-```
-
-The config lives at `$XDG_CONFIG_HOME/tts-podcast/config.yaml` (typically
-`~/.config/tts-podcast/config.yaml`). The full schema is in
-[`config.example.yaml`](config.example.yaml). The API key is read at runtime
-from the env var named by `gemini.api_key_env` (default `GEMINI_API_KEY`) and
-loaded from a local `.env` automatically.
-
-```yaml
-gemini:
-  api_key_env: GEMINI_API_KEY
-  default_duo: contrast        # persistent voice pairing
-  dialogue:
-    target_duration_minutes: 8
-```
-
----
-
-## 📦 Installation
-
-```bash
-uvx tts-podcast …                # run without installing
-uv tool install tts-podcast      # persistent install via uv
-pipx install tts-podcast         # via pipx
-pip install tts-podcast          # plain pip
-```
-
-**Optional stealth-browser fallback** (pulls a ~200 MB Chromium on first run):
-
-```bash
-uv tool install "tts-podcast[cloak]"
-```
-
-**`ffmpeg` is required for audio export** — skip only if you stick to
-`--no-audio` / `--dry-run`:
-
-```bash
-brew install ffmpeg          # macOS
-sudo apt install ffmpeg      # Debian / Ubuntu
-```
-
-### From source
-
-```bash
-git clone https://github.com/obeone/tts-podcast.git
-cd tts-podcast
-uv sync                      # Python 3.13+
-uv run tts-podcast --help
-```
+when a run feels expensive. A cap of zero is rejected up front: downstream it
+would make the whole stage fetch nothing without a word.
 
 ---
 
@@ -388,18 +417,20 @@ uv run tts-podcast --help
 ```
 
 The stem combines the first URL's hostname, a 6-char digest of the URL list,
-and today's date — e.g. `arxiv.org-a1b2c3-2026-06-07.mp3`. Override the whole
-filename with `-O NAME` (a bare name lands in `<output_dir>`), or pass `-O -`
-to stream the audio to stdout instead of writing a file.
+and today's date, for example `arxiv.org-a1b2c3-2026-06-07.mp3`. Override the
+whole filename with `-O NAME` (a bare name lands in `<output_dir>`), or pass
+`-O -` to stream the audio to stdout.
 
 ---
 
-## 💸 Research cost note
+## 💸 Cost
+
+Token usage is tracked per model as the run goes, and the cost estimate shown
+next to the progress is computed from the `pricing` section of your config.
 
 Each `--research` round is a separate Gemini call with Google Search grounding
-enabled, which adds search overhead to the standard input-token cost. The tool
-logs the cumulative cost after each round, so you can watch the bill while
-iterating.
+enabled, which adds search overhead to the input-token cost. The tool logs the
+cumulative cost after each round.
 
 `--follow-links` bills on top of that: one relevance-judging call per hop, plus
 the pages it feeds into research and dialogue as extra input tokens. Keep
@@ -410,14 +441,16 @@ worth mining.
 
 ## 🧪 Development
 
-```bash
-uv sync                          # install deps (Python 3.13+)
-uv run pytest tests/ -q          # run the test suite
-uv run ruff check src/ tests/    # lint
-```
+| Command | Description |
+|---|---|
+| `uv sync` | Install dependencies (Python 3.13+). |
+| `uv run pytest tests/ -q` | Run the test suite. |
+| `uv run ruff check src/ tests/` | Lint. |
+| `uv run tts-podcast run -n <URL>` | Dry run from the checkout: script only, no TTS. |
 
-Tests mock the Gemini SDK rather than hitting the network. See
-[`AGENTS.md`](AGENTS.md) for the architecture deep-dive and key invariants.
+Tests mock the Gemini SDK and never hit the network. See
+[`AGENTS.md`](AGENTS.md) for the architecture notes and the invariants worth
+knowing before changing the pipeline.
 
 ---
 
@@ -452,9 +485,9 @@ flowchart TB
     D --> REP[📑 report_generator<br/>Markdown folder]
 ```
 
-The pipeline is strictly linear: each stage hands typed data to the next, no
-hidden shared state. Scrape failures don't abort the run — it continues with
-whatever succeeded.
+The pipeline is strictly linear: each stage hands typed data to the next, with
+no hidden shared state. A failed scrape does not abort the run, which carries
+on with whatever succeeded and stops only when every input failed.
 
 ### Truncated article bodies
 
@@ -486,6 +519,8 @@ used only when the alternative is losing most of the article.
 ## 📝 License
 
 MIT © [Grégoire Compagnon](mailto:obeone@obeone.org)
+
+Made by Grégoire Compagnon (obeone)
 
 [grounding]: https://ai.google.dev/gemini-api/docs/google-search
 [voices]: https://ai.google.dev/gemini-api/docs/speech-generation
