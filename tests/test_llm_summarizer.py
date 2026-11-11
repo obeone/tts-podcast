@@ -304,6 +304,10 @@ class TestAudioTagsEnabled:
     def test_missing_tts_model_defaults_off(self):
         assert _audio_tags_enabled({}) is False
 
+    def test_auto_stays_on_for_models_after_gemini_3(self):
+        """A post-3.x speech-metadata model keeps its vocal tags by default."""
+        assert _audio_tags_enabled({"tts_model": "gemini-4-flash-tts"}) is True
+
 
 # ---------------------------------------------------------------------------
 # Style / overlay / angle injections

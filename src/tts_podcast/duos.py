@@ -11,9 +11,10 @@ Two optional layers refine how a duo *sounds* without touching what it
 *says*:
 
 * a per-speaker ``voice_direction`` string (a Director's Note covering
-  register, tempo, articulation and breathing).  It is read **only** by
-  :func:`tts_podcast.tts_generator._build_tts_prompt`; it must never reach
-  the dialogue prompt, which is the mirror image of the existing
+  register, tempo, articulation and breathing).  It is read **only** by the
+  TTS path (:func:`tts_podcast.tts_generator._build_tts_prompt` before Gemini
+  3.8, :func:`tts_podcast.tts_generator._speaker_style` from 3.8 on); it must
+  never reach the dialogue prompt, which is the mirror image of the existing
   ``style_overlay`` key (dialogue-prompt-only, never read by the TTS path).
 * duo-level ``scene`` and ``pace`` strings, used as *defaults* for
   ``gemini.tts_style.scene`` / ``gemini.tts_style.pace``.  A value already
@@ -53,8 +54,9 @@ preserving when editing this registry:
   rather than a trajectory (a note that ramps up would fight the
   anti-crescendo instruction in the TTS director's notes).
 
-The ``voice_direction`` strings also sit inside a byte budget, and they do not
-ride for free.  Every byte a duo spends on directions comes straight out of the
+On TTS models before Gemini 3.8 the ``voice_direction`` strings also sit
+inside a byte budget, and they do not ride for free (from 3.8 on they travel
+as the per-turn ``speech_metadata`` style and the chunk budget is fixed).  Every byte a duo spends on directions comes straight out of the
 dialogue budget :func:`tts_podcast.llm_summarizer._resolve_chunk_budget` hands
 the chunker, so a longer direction means smaller chunks, more TTS requests per
 episode and more splice points between independently generated audio segments.
